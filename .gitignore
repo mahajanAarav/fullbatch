@@ -222,3 +222,6 @@ __marimo__/
 # Frontend
 node_modules/
 dist/
+
+# Private Claude notes
+CLAUDE.local.md
