@@ -1,0 +1,4 @@
+# Everything for local development and tests (includes the runtime requirements).
+-r requirements.txt
+pytest==9.1.1
+pixeltable-pgserver==0.6.0  # a real Postgres inside the test run, no install needed

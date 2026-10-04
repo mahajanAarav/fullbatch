@@ -17,7 +17,9 @@ An AI agent that runs preorder "drops" for small sellers such as home bakers and
 - Database: Postgres
 - AI: an LLM API with tool calling; the agent's tools are backend functions (create drop, take order, check stock)
 - Frontend: React, with AG Studio (AG Grid) for the seller dashboard
-- Chat channel: a web chat inside the React app
+- Chat channel: a web chat inside the React app, optional: everything it does also has buttons and forms
+- Accounts: Log in with PayPal (PayPal verifies identity; sellers need a PayPal-verified account), cookie sessions
+- LLM providers: Gemini models first, Groq as the last-resort fallback, behind one small interface (`app/llm.py`)
 - Hosting: Render, with Render Workflows for the deadline job
 
 ## Layout
@@ -26,22 +28,30 @@ An AI agent that runs preorder "drops" for small sellers such as home bakers and
 backend/
   app/
     main.py       API routes and PayPal webhooks
-    paypal.py     authorize, capture, void, refund
-    drops.py      drop engine: stock, minimum, deadline
-    agent.py      chat agent and its tools
-    models.py     database tables
-  scripts/
-    test_paypal_flow.py   sandbox test of authorize, capture, void
-  requirements.txt
-frontend/         React app
-workflows/        Render Workflows tasks
+    auth.py       sign-in: PayPal login, dev login, cookie sessions, access checks
+    paypal.py     authorize, capture, void, plus Log in with PayPal calls
+    drops.py      drop engine: stock, minimum, deadline, settlement, seller verification
+    agent.py      chat agent and its role-scoped tools
+    llm.py        provider-neutral model interface + fallback;  gemini.py, groq.py, llm_factory.py
+    models.py     database tables;  db.py, config.py, deps.py
+    server.py     deployed shape: API under /api + the built React app, in-app deadline timer
+  migrations/     Alembic
+  scripts/        dev_db.py, sandbox checks, live model check
+  tests/          pytest (real Postgres via pixeltable-pgserver, fake PayPal)
+frontend/         React + Vite + TypeScript
+workflows/        (empty) reserved for Render Workflows
+Dockerfile, render.yaml, DEPLOY.md   deployment (one Render web service)
+dev.sh            starts the database, API and frontend locally
 ```
 
 ## Commands
 
-- Activate the Python environment: `source backend/.venv/bin/activate`
-- PayPal flow test: `python backend/scripts/test_paypal_flow.py`
-  This script is interactive. A person must open the printed link and approve the payment as a sandbox buyer, so do not run it unattended.
+- Run everything locally: `./dev.sh` (sets `DEV_LOGIN=1`, a local-only sign-in; open http://localhost:5173)
+- Tests: `cd backend && source .venv/bin/activate && python -m pytest tests -q`
+- Python environment: `source backend/.venv/bin/activate` (dev deps: `pip install -r backend/requirements-dev.txt`)
+- PayPal sandbox checks: `python backend/scripts/check_paypal_credentials.py`; the flow scripts are interactive
+  (a person must approve the payment as a sandbox buyer), so do not run `test_paypal_flow.py` or `test_paypal_client.py` unattended.
+- Live model check: `python backend/scripts/check_gemini_agent.py [--provider gemini|groq|auto]`
 
 ## Rules
 
@@ -51,4 +61,7 @@ workflows/        Render Workflows tasks
 - Stock reservation must use row locking so two buyers cannot claim the last unit.
 - The LLM never calls PayPal directly. Capture, void, and refund go through functions in `backend/app/paypal.py`.
 - Keep the PayPal functions small and reusable: `get_token`, `create_order`, `authorize_order`, `capture_authorization`, `void_authorization`.
+- Who is calling comes from the sign-in cookie, never from a request body or from the LLM. Sellers act only on their own drops; buyers see only their own orders.
+- Only shops whose owner has a PayPal-verified account may open drops. The rule lives in `drops.create_drop`, so every path is covered.
+- `DEV_LOGIN` (the local sign-in that skips PayPal) must never be set on the deployed app.
 - Commit in small steps with clear messages.

@@ -1,0 +1,30 @@
+# Render Blueprint: one web service that serves both the API (/api) and the React app.
+# Secrets are NOT stored here. Render asks for each `sync: false` value when you create the service.
+services:
+  - type: web
+    name: fullbatch
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL        # your Neon (or other) Postgres connection string
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: GEMINI_KEY
+        sync: false
+      - key: GROQ_KEY
+        sync: false
+      - key: PUBLIC_API_URL      # https://<your-service>.onrender.com/api   (set after the first deploy)
+        sync: false
+      - key: FRONTEND_URL        # https://<your-service>.onrender.com        (set after the first deploy)
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID   # from the PayPal dashboard, after you create the webhook
+        sync: false
+      - key: TIMEZONE
+        value: America/New_York
+      - key: JOB_INTERVAL_SECONDS  # settle due drops every 30s from inside the app
+        value: "30"
+      # DEV_LOGIN is deliberately NOT set here. The dev sign-in must never exist on the deployed app.

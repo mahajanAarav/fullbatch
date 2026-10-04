@@ -1,0 +1,13 @@
+.git
+.claude
+.env
+.env.*
+!.env.example
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+backend/.devdb
+backend/tests
+frontend/dist
+**/.DS_Store
