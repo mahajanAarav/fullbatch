@@ -110,7 +110,7 @@ def create_drop(ctx: ToolContext, a: CreateDropArgs) -> dict:
         ctx.session,
         seller_id=ctx.seller_id,
         item_name=a.item_name,
-        unit_price=Decimal(str(round(a.unit_price, 2))),
+        unit_price=Decimal(str(a.unit_price)).quantize(Decimal("0.01")),
         quantity_total=a.quantity_total,
         minimum_units=a.minimum_units,
         deadline=_parse_deadline(a.deadline, ctx.settings.timezone),

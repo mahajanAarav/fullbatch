@@ -71,13 +71,14 @@ def test_tool_schemas_are_clean(session):
 # ---- seller flows ----------------------------------------------------------
 
 def test_seller_creates_a_drop(session, seller, paypal):
-    args = dict(item_name="Sourdough", unit_price=9.5, quantity_total=10, minimum_units=5, deadline=future())
+    args = dict(item_name="Sourdough", unit_price=9, quantity_total=10, minimum_units=5, deadline=future())
     llm = ScriptedLLM([("create_drop", args)], "Your drop is live!")
     reply = turn(session, llm, paypal, "seller", "make a drop", seller_id=seller.id)
     assert reply == "Your drop is live!"
     drop = session.scalars(select(Drop)).one()
-    assert drop.seller_id == seller.id and str(drop.unit_price) == "9.50"
+    assert drop.seller_id == seller.id and str(drop.unit_price) == "9.00"
     assert tool_results(llm, 1)[0]["id"] == drop.id
+    assert tool_results(llm, 1)[0]["unit_price"] == "9.00"  # always two decimals, even before a database reload
 
 
 def test_naive_deadline_is_read_in_the_configured_timezone(session, seller, paypal):
