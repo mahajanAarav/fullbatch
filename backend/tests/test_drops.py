@@ -160,3 +160,26 @@ def test_concurrent_buyers_never_oversell(session_factory, make_drop):
     with session_factory() as s:
         assert drops.units_taken(s, drop.id) == 5
         assert len(s.scalars(select(Order)).all()) == 5
+
+
+# ---- seller verification ---------------------------------------------------
+
+def test_an_unverified_seller_cannot_open_a_drop(session, seller_user, seller, make_drop):
+    seller_user.paypal_verified = False
+    session.commit()
+    with pytest.raises(drops.SellerNotVerified, match="isn't verified"):
+        make_drop()
+
+
+def test_a_shop_with_no_owner_is_not_verified(session, make_drop):
+    from app.models import Seller
+    orphan = Seller(name="Legacy shop")  # created before accounts existed
+    session.add(orphan)
+    session.commit()
+    with pytest.raises(drops.SellerNotVerified):
+        make_drop(seller_id=orphan.id)
+
+
+def test_unknown_seller_is_refused(make_drop):
+    with pytest.raises(drops.InvalidDrop, match="Unknown seller"):
+        make_drop(seller_id=9999)

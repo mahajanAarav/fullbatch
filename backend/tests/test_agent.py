@@ -11,12 +11,13 @@ from sqlalchemy import select
 from app import agent, drops
 from app.config import Settings, get_settings
 from app.db import get_session
+from app.deps import get_llm, get_paypal
 from app.llm import LLMError
-from app.main import app, get_llm, get_paypal
+from app.main import app
 from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, Seller
-from tests.fakes import FakePayPal, ScriptedLLM
+from tests.fakes import FakePayPal, ScriptedLLM, sign_in
 
-SETTINGS = Settings(public_api_url="http://api.test", frontend_url="http://app.test", timezone="America/New_York")
+SETTINGS = Settings(public_api_url="http://api.test", frontend_url="http://app.test", timezone="America/New_York", dev_login=True)
 
 
 @pytest.fixture
@@ -24,8 +25,8 @@ def paypal():
     return FakePayPal()
 
 
-def turn(session, llm, paypal, role, text, session_id="s1", seller_id=None):
-    return agent.run_turn(session, llm, paypal, SETTINGS, role, session_id, text, seller_id=seller_id)
+def turn(session, llm, paypal, role, text, session_id="s1", seller_id=None, user=None):
+    return agent.run_turn(session, llm, paypal, SETTINGS, role, session_id, text, seller_id=seller_id, user=user)
 
 
 def tool_results(llm, call_index):
@@ -96,6 +97,16 @@ def test_bad_tool_input_comes_back_as_a_readable_error(session, seller, paypal):
     assert session.scalars(select(Drop)).all() == []
 
 
+def test_an_unverified_seller_is_refused_through_the_agent_too(session, seller_user, seller, paypal):
+    seller_user.paypal_verified = False
+    session.commit()
+    args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=2, deadline=future())
+    llm = ScriptedLLM([("create_drop", args)], "Sorry")
+    turn(session, llm, paypal, "seller", "go", seller_id=seller.id)
+    assert "isn't verified" in tool_results(llm, 1)[0]["error"]
+    assert session.scalars(select(Drop)).all() == []
+
+
 def test_engine_rules_still_apply_through_the_agent(session, seller, paypal):
     args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=9, deadline=future())
     llm = ScriptedLLM([("create_drop", args)], "no")
@@ -105,7 +116,11 @@ def test_engine_rules_still_apply_through_the_agent(session, seller, paypal):
 
 def test_seller_cannot_see_or_cancel_someone_elses_drop(session, seller, make_drop, paypal):
     drop = make_drop()  # belongs to `seller`
-    other = Seller(name="Rival")
+    from app.models import User
+    rival_user = User(name="Rival", email="rival@example.com", paypal_verified=True)
+    session.add(rival_user)
+    session.commit()
+    other = Seller(name="Rival", user_id=rival_user.id)
     session.add(other)
     session.commit()
     llm = ScriptedLLM(
@@ -144,38 +159,43 @@ def test_drop_status_reports_progress_toward_the_minimum(session, seller, make_d
 
 # ---- buyer flows -----------------------------------------------------------
 
-def test_buyer_places_an_order_and_gets_the_paypal_link(session, make_drop, paypal):
+def test_buyer_places_an_order_and_gets_the_paypal_link(session, make_drop, paypal, buyer):
     drop = make_drop()
-    args = dict(drop_id=drop.id, quantity=2, buyer_name="Ann", buyer_email="ann@example.com")
-    llm = ScriptedLLM([("place_order", args)], "Here is your link")
-    turn(session, llm, paypal, "buyer", "2 please", session_id="buyer-77")
+    llm = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=2))], "Here is your link")
+    turn(session, llm, paypal, "buyer", "2 please", session_id="user-77", user=buyer)
     order = session.scalars(select(Order)).one()
-    assert order.chat_session_id == "buyer-77"  # injected by the server
+    assert order.chat_session_id == "user-77"  # supplied by the server
+    assert (order.buyer_name, order.buyer_email, order.buyer_user_id) == (buyer.name, buyer.email, buyer.id)
     result = tool_results(llm, 1)[0]
     assert result["approval_url"].startswith("https://fake.paypal/approve/") and result["amount"] == "18.00"
 
 
-def test_the_model_cannot_choose_the_chat_session_id(session, make_drop, paypal):
+def test_the_model_cannot_choose_who_is_buying(session, make_drop, paypal, buyer):
+    """Even if the model invents a name, email or session id, the signed-in account is what counts."""
     drop = make_drop()
-    args = dict(drop_id=drop.id, quantity=1, buyer_name="Ann", buyer_email="a@example.com", chat_session_id="someone-else")
-    turn(session, ScriptedLLM([("place_order", args)], "ok"), paypal, "buyer", "go", session_id="mine")
-    assert session.scalars(select(Order)).one().chat_session_id == "mine"
+    args = dict(drop_id=drop.id, quantity=1, buyer_name="Eve", buyer_email="evil@example.com", chat_session_id="someone-else", buyer_user_id=999)
+    turn(session, ScriptedLLM([("place_order", args)], "ok"), paypal, "buyer", "go", session_id="mine", user=buyer)
+    order = session.scalars(select(Order)).one()
+    assert (order.buyer_name, order.buyer_email, order.chat_session_id, order.buyer_user_id) == (buyer.name, buyer.email, "mine", buyer.id)
 
 
-def test_sold_out_is_explained_not_raised(session, make_drop, paypal):
+def test_place_order_tool_does_not_ask_for_personal_details(session):
+    spec = next(t for t in agent.BUYER_TOOLS if t.name == "place_order").spec()
+    assert set(spec["parameters"]["properties"]) == {"drop_id", "quantity"}
+
+
+def test_sold_out_is_explained_not_raised(session, make_drop, paypal, buyer):
     drop = make_drop(quantity_total=2, minimum_units=1)
-    args = dict(drop_id=drop.id, quantity=3, buyer_name="Ann", buyer_email="a@example.com")
-    llm = ScriptedLLM([("place_order", args)], "Only 2 left")
-    turn(session, llm, paypal, "buyer", "3 please")
+    llm = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=3))], "Only 2 left")
+    turn(session, llm, paypal, "buyer", "3 please", user=buyer)
     assert tool_results(llm, 1)[0]["remaining"] == 2
 
 
-def test_paypal_outage_is_explained_and_stock_is_released(session, make_drop, paypal):
+def test_paypal_outage_is_explained_and_stock_is_released(session, make_drop, paypal, buyer):
     drop = make_drop()
     paypal.fail_create = True
-    args = dict(drop_id=drop.id, quantity=4, buyer_name="Ann", buyer_email="a@example.com")
-    llm = ScriptedLLM([("place_order", args)], "Try again soon")
-    turn(session, llm, paypal, "buyer", "go")
+    llm = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=4))], "Try again soon")
+    turn(session, llm, paypal, "buyer", "go", user=buyer)
     assert "payment system" in tool_results(llm, 1)[0]["error"]
     assert drops.units_taken(session, drop.id) == 0
 
@@ -261,7 +281,7 @@ def test_a_dangling_tool_request_is_skipped_and_later_messages_survive(session, 
 # ---- HTTP endpoints --------------------------------------------------------
 
 @pytest.fixture
-def client(session_factory, paypal):
+def make_client(session_factory, paypal):
     holder = {"llm": ScriptedLLM("hi there")}
 
     def _session():
@@ -272,38 +292,75 @@ def client(session_factory, paypal):
     app.dependency_overrides[get_paypal] = lambda: paypal
     app.dependency_overrides[get_llm] = lambda: holder["llm"]
     app.dependency_overrides[get_settings] = lambda: SETTINGS
-    c = TestClient(app, follow_redirects=False)
-    c.holder = holder
-    yield c
+
+    def build():
+        c = TestClient(app, follow_redirects=False)
+        c.holder = holder
+        return c
+
+    yield build
     app.dependency_overrides.clear()
 
 
-def test_buyer_chat_endpoint_and_history(client):
-    r = client.post("/chat/buyer", json={"session_id": "abc", "message": "hello"})
+def test_chat_requires_sign_in(make_client):
+    c = make_client()
+    assert c.post("/chat/buyer", json={"message": "hi"}).status_code == 401
+    assert c.post("/chat/seller", json={"message": "hi"}).status_code == 401
+    assert c.get("/chat/buyer/history").status_code == 401
+
+
+def test_buyer_chat_endpoint_and_history(make_client):
+    c = make_client()
+    sign_in(c, "Sam", "sam@example.com")
+    r = c.post("/chat/buyer", json={"message": "hello"})
     assert r.status_code == 200 and r.json() == {"reply": "hi there"}
-    history = client.get("/chat/buyer/abc/history").json()["messages"]
-    assert history == [{"role": "user", "text": "hello"}, {"role": "assistant", "text": "hi there"}]
-    assert client.get("/chat/seller/abc/history").json()["messages"] == []  # different conversation
-    assert client.get("/chat/hacker/abc/history").status_code == 404
+    assert c.get("/chat/buyer/history").json()["messages"] == [
+        {"role": "user", "text": "hello"}, {"role": "assistant", "text": "hi there"}]
+    assert c.get("/chat/seller/history").json()["messages"] == []  # a different conversation
+    assert c.get("/chat/hacker/history").status_code == 404
 
 
-def test_seller_chat_needs_a_real_seller(client):
-    assert client.post("/chat/seller", json={"session_id": "s", "message": "hi", "seller_id": 999}).status_code == 404
-    seller = client.post("/sellers", json={"name": "Bakery"}).json()
-    r = client.post("/chat/seller", json={"session_id": "s", "message": "hi", "seller_id": seller["id"]})
-    assert r.status_code == 200
+def test_chat_history_is_private_to_each_account(make_client):
+    ann, ben = make_client(), make_client()
+    sign_in(ann, "Ann", "ann@example.com")
+    sign_in(ben, "Ben", "ben@example.com")
+    ann.post("/chat/buyer", json={"message": "my private question"})
+    assert ben.get("/chat/buyer/history").json()["messages"] == []
 
 
-def test_chat_validates_input(client):
-    assert client.post("/chat/buyer", json={"session_id": "abc", "message": ""}).status_code == 422
-    assert client.post("/chat/buyer", json={"session_id": "abc", "message": "x" * 2001}).status_code == 422
+def test_seller_chat_needs_a_shop(make_client):
+    c = make_client()
+    sign_in(c, "Bea", "bea@example.com")
+    assert c.post("/chat/seller", json={"message": "hi"}).status_code == 403   # signed in, but no shop yet
+    c.post("/shop", json={"name": "Bea's"})
+    assert c.post("/chat/seller", json={"message": "hi"}).status_code == 200
 
 
-def test_model_outage_is_a_503(client):
+def test_the_ai_buyer_chat_places_orders_for_the_signed_in_account(make_client, session_factory, make_drop):
+    drop = make_drop()  # an open drop, owned by a verified shop (fixtures)
+    c = make_client()
+    sign_in(c, "Sam Lee", "sam@example.com")
+    c.holder["llm"] = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=2))], "Done")
+    assert c.post("/chat/buyer", json={"message": "2 please"}).status_code == 200
+    with session_factory() as s:
+        order = s.scalars(select(Order)).one()
+    assert order.buyer_email == "sam@example.com" and order.buyer_user_id is not None
+    assert c.get("/me/orders").json()["orders"][0]["id"] == order.id
+
+
+def test_chat_validates_input(make_client):
+    c = make_client()
+    sign_in(c)
+    assert c.post("/chat/buyer", json={"message": ""}).status_code == 422
+    assert c.post("/chat/buyer", json={"message": "x" * 2001}).status_code == 422
+
+
+def test_model_outage_is_a_503(make_client):
     class Down:
         def generate(self, **kwargs):
             raise LLMError("model unreachable")
 
-    client.holder["llm"] = Down()
-    r = client.post("/chat/buyer", json={"session_id": "abc", "message": "hello"})
-    assert r.status_code == 503
+    c = make_client()
+    sign_in(c)
+    c.holder["llm"] = Down()
+    assert c.post("/chat/buyer", json={"message": "hello"}).status_code == 503

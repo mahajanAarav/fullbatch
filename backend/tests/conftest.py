@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # Make `import app...` work no matter where pytest is started from.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import Base, Seller  # noqa: E402
+from app.models import Base, Seller, User  # noqa: E402
 from app import drops  # noqa: E402
 
 
@@ -41,7 +41,7 @@ def session_factory(engine):
     """Gives each test empty tables. Tests that need many sessions use this directly."""
     with engine.begin() as conn:
         conn.execute(
-            text("TRUNCATE chat_messages, drop_events, orders, drops, sellers RESTART IDENTITY CASCADE")
+            text("TRUNCATE chat_messages, drop_events, orders, drops, sellers, auth_sessions, users RESTART IDENTITY CASCADE")
         )
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -53,8 +53,25 @@ def session(session_factory) -> Session:
 
 
 @pytest.fixture
-def seller(session) -> Seller:
-    s = Seller(name="Test Bakery")
+def seller_user(session) -> User:
+    """A seller's PayPal-verified account."""
+    u = User(name="Baker Bea", email="bea@example.com", paypal_payer_id="PAYER-SELLER", paypal_verified=True, email_verified=True)
+    session.add(u)
+    session.commit()
+    return u
+
+
+@pytest.fixture
+def buyer(session) -> User:
+    u = User(name="Sam Lee", email="sam@example.com", paypal_payer_id="PAYER-BUYER", paypal_verified=True, email_verified=True)
+    session.add(u)
+    session.commit()
+    return u
+
+
+@pytest.fixture
+def seller(session, seller_user) -> Seller:
+    s = Seller(name="Test Bakery", user_id=seller_user.id)
     session.add(s)
     session.commit()
     return s

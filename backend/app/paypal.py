@@ -19,6 +19,7 @@ import os
 import threading
 import time
 import uuid
+from urllib.parse import urlencode
 from decimal import Decimal
 from pathlib import Path
 
@@ -26,6 +27,9 @@ import httpx
 from dotenv import load_dotenv
 
 SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com"
+SANDBOX_LOGIN_URL = "https://www.sandbox.paypal.com/connect"
+# Name, email and PayPal's own "is this a verified account" flag.
+LOGIN_SCOPE = "openid email profile https://uri.paypal.com/services/paypalattributes"
 
 
 class PayPalError(Exception):
@@ -205,8 +209,74 @@ class PayPalClient:
         )
         return r.json().get("verification_status") == "SUCCESS"
 
+    # ---- Log in with PayPal -----------------------------------------------
+
+    def login_url(self, *, redirect_uri: str, state: str) -> str:
+        """Where to send the browser so the person can sign in with PayPal."""
+        query = urlencode({
+            "flowEntry": "static",
+            "client_id": self._client_id,
+            "response_type": "code",
+            "scope": LOGIN_SCOPE,
+            "redirect_uri": redirect_uri,
+            "state": state,
+        })
+        return f"{SANDBOX_LOGIN_URL}?{query}"
+
+    def exchange_login_code(self, code: str) -> str:
+        """Trade the one-time code PayPal sent back for that person's access token."""
+        r = self._http.post(
+            "/v1/oauth2/token",
+            auth=(self._client_id, self._client_secret),
+            data={"grant_type": "authorization_code", "code": code},
+        )
+        if r.status_code != 200:
+            raise PayPalError("exchange login code", r.status_code, r.text)
+        try:
+            return r.json()["access_token"]
+        except (KeyError, ValueError):
+            raise PayPalError("read login token", r.status_code, r.text)
+
+    def get_login_profile(self, access_token: str) -> dict:
+        """
+        Who just signed in, in one clean shape:
+        {payer_id, email, email_verified, name, verified_account}.
+        """
+        r = self._http.get(
+            "/v1/identity/oauth2/userinfo",
+            params={"schema": "paypalv1.1"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if r.status_code != 200:
+            raise PayPalError("read login profile", r.status_code, r.text)
+        return parse_login_profile(r.json(), r)
+
     def close(self) -> None:
         self._http.close()
+
+
+def parse_login_profile(data: dict, response: httpx.Response | None = None) -> dict:
+    """PayPal's userinfo comes in a couple of shapes. Normalise it, and refuse a profile without an id or email."""
+    status, body = (response.status_code, response.text) if response is not None else (200, str(data))
+    payer_id = data.get("payer_id") or str(data.get("user_id", "")).rstrip("/").rsplit("/", 1)[-1]
+
+    email, verified_email = data.get("email"), bool(data.get("email_verified"))
+    emails = data.get("emails") or []
+    primary = next((e for e in emails if e.get("primary")), emails[0] if emails else None)
+    if primary:
+        email, verified_email = primary.get("value"), bool(primary.get("confirmed"))
+
+    name = data.get("name") or " ".join(p for p in (data.get("given_name"), data.get("family_name")) if p) or (email or "")
+    if not payer_id or not email:
+        raise PayPalError("read login profile", status, body)
+    return {
+        "payer_id": payer_id,
+        "email": email,
+        "email_verified": verified_email,
+        "name": name[:120],
+        # PayPal sends this as the string "true" / "false".
+        "verified_account": str(data.get("verified_account", "")).lower() == "true",
+    }
 
 
 def from_env() -> PayPalClient:

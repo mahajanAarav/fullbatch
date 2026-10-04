@@ -13,6 +13,11 @@ class FakePayPal:
         self.on_authorize = None                  # optional callback to simulate a race
         self.fail_create = False                  # make checkout creation fail
         self.webhook_valid = True                 # what signature verification answers
+        self.login_profile = {                    # who "PayPal" says just signed in
+            "payer_id": "PAYER-1", "email": "sam@example.com", "email_verified": True,
+            "name": "Sam Lee", "verified_account": True,
+        }
+        self.login_fails = False
 
     def create_order(self, *, amount, currency, description, return_url, cancel_url,
                      custom_id=None, request_id=None):
@@ -48,6 +53,17 @@ class FakePayPal:
     def verify_webhook_signature(self, *, headers, event, webhook_id):
         return self.webhook_valid
 
+    def login_url(self, *, redirect_uri, state):
+        return f"https://fake.paypal/connect?redirect_uri={redirect_uri}&state={state}"
+
+    def exchange_login_code(self, code):
+        if self.login_fails:
+            raise PayPalError("exchange login code", 400, "invalid_grant")
+        return f"token-for-{code}"
+
+    def get_login_profile(self, access_token):
+        return dict(self.login_profile)
+
 
 class ScriptedLLM:
     """
@@ -73,3 +89,10 @@ class ScriptedLLM:
                 for i, (name, args) in enumerate(step)
             ],
         }
+
+
+def sign_in(client, name="Ann Baker", email="ann@example.com", verified=True):
+    """Sign a TestClient in through the local dev login. Its cookie jar keeps the session."""
+    r = client.post("/auth/dev-login", json={"name": name, "email": email, "verified": verified})
+    assert r.status_code == 200, r.text
+    return r.json()

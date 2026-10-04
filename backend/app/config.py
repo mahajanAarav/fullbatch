@@ -20,6 +20,13 @@ class Settings:
     paypal_webhook_id: str = ""
     # Deadlines a seller types without a timezone are read in this one.
     timezone: str = "America/New_York"
+    # Local-only sign-in that skips PayPal. NEVER enable on the deployed app.
+    dev_login: bool = False
+
+    @property
+    def cookie_secure(self) -> bool:
+        """Browsers only send Secure cookies over https, which is what the deployed app uses."""
+        return self.public_api_url.startswith("https://")
 
 
 @lru_cache
@@ -30,4 +37,5 @@ def get_settings() -> Settings:
         frontend_url=os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/"),
         paypal_webhook_id=os.getenv("PAYPAL_WEBHOOK_ID", ""),
         timezone=os.getenv("TIMEZONE", "America/New_York"),
+        dev_login=os.getenv("DEV_LOGIN", "") == "1",
     )

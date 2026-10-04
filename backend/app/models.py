@@ -16,6 +16,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -72,14 +73,51 @@ def _enum(enum_class: type[enum.Enum]) -> Enum:
     )
 
 
+class User(Base):
+    """A signed-in person. Buyers and sellers are both Users; a seller also owns a shop."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # PayPal's stable id for this person. Unique, so signing in twice never makes two users.
+    paypal_payer_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    email: Mapped[str] = mapped_column(String(254))
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    name: Mapped[str] = mapped_column(String(120))
+    # PayPal's own verdict that this is a verified PayPal account. Sellers need it to open drops.
+    paypal_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_dev: Mapped[bool] = mapped_column(Boolean, default=False)  # created by the local-only dev sign-in
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuthSession(Base):
+    """A browser's sign-in. Only a hash of the cookie token is stored, so a database leak is not a session leak."""
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Seller(Base):
     __tablename__ = "sellers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
+    # The person who owns this shop. One shop per user.
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    user: Mapped["User | None"] = relationship()
     drops: Mapped[list["Drop"]] = relationship(back_populates="seller")
+
+    @property
+    def verified(self) -> bool:
+        """A shop is verified when its owner's PayPal account is."""
+        return bool(self.user and self.user.paypal_verified)
 
 
 class Drop(Base):
@@ -126,6 +164,7 @@ class Order(Base):
     # Buyers have no accounts: just what they type into the chat.
     buyer_name: Mapped[str] = mapped_column(String(120))
     buyer_email: Mapped[str] = mapped_column(String(254))
+    buyer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
     chat_session_id: Mapped[str] = mapped_column(String(64), index=True)
 
     quantity: Mapped[int] = mapped_column(Integer)

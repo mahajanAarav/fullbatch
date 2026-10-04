@@ -1,16 +1,19 @@
 """
 fullbatch HTTP API.
 
-Seller side:  POST /sellers, POST /drops, GET /drops/{id}, POST /drops/{id}/cancel
-Buyer side:   POST /drops/{id}/orders, GET /orders/{id}
+Public:       GET /health, GET /drops, GET /drops/{id}
+Sign-in:      /auth/... (see app/auth.py)
+Seller:       POST /shop, POST /drops, GET /me/drops, POST /drops/{id}/cancel
+Buyer:        POST /drops/{id}/orders, GET /me/orders, GET /orders/{id}
+Chat:         POST /chat/seller, POST /chat/buyer, GET /chat/{role}/history
 PayPal:       GET /paypal/return, GET /paypal/cancel, POST /paypal/webhook
 
-Known gap: there is no seller login yet, so the seller routes are open.
+Who is calling always comes from the sign-in cookie. Nothing in a request body can
+name a different seller or buyer.
 """
 
 import json
 from decimal import Decimal
-from functools import lru_cache
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,12 +23,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import agent, drops
+from app import agent, auth, drops
+from app.auth import buyer_chat_id, require_shop, require_user
 from app.config import Settings, get_settings
 from app.db import get_session
+from app.deps import get_llm, get_paypal
 from app.llm import LLMError
-from app.models import ChatMessage, Drop, Order, Seller
-from app.paypal import PayPalError, from_env
+from app.models import ChatMessage, Drop, Order, Seller, User
+from app.paypal import PayPalError
 
 app = FastAPI(title="fullbatch")
 app.add_middleware(
@@ -33,21 +38,9 @@ app.add_middleware(
     allow_origins=[get_settings().frontend_url],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
-
-
-@lru_cache
-def get_paypal():
-    """One PayPal client for the whole process, so the access token is reused."""
-    return from_env()
-
-
-@lru_cache
-def get_llm():
-    """The language model the agent talks to (Gemini, then Groq). Imported here so tests need no API keys."""
-    from app.llm_factory import from_env as llm_from_env
-
-    return llm_from_env()
+app.include_router(auth.router)
 
 
 # ---- turn drop-engine errors into proper HTTP answers ----------------------
@@ -64,6 +57,7 @@ def _error(status: int):
 for _exc, _status in [
     (drops.DropNotFound, 404),
     (drops.OrderNotFound, 404),
+    (drops.SellerNotVerified, 403),
     (drops.SoldOut, 409),
     (drops.DropNotOpen, 409),
     (drops.OrderNotPayable, 409),
@@ -77,12 +71,11 @@ app.add_exception_handler(LLMError, _error(503))
 
 # ---- request bodies --------------------------------------------------------
 
-class SellerIn(BaseModel):
+class ShopIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
 class DropIn(BaseModel):
-    seller_id: int
     item_name: str = Field(min_length=1, max_length=200)
     unit_price: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
     quantity_total: int = Field(gt=0)
@@ -92,10 +85,11 @@ class DropIn(BaseModel):
 
 
 class OrderIn(BaseModel):
-    buyer_name: str = Field(min_length=1, max_length=120)
-    buyer_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
-    chat_session_id: str = Field(min_length=1, max_length=64)
     quantity: int
+
+
+class ChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -105,91 +99,12 @@ def frontend_order_url(settings: Settings, order_id: int | None, status: str) ->
     return f"{settings.frontend_url}{path}?status={status}"
 
 
-# ---- seller routes ---------------------------------------------------------
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.post("/sellers", status_code=201)
-def create_seller(body: SellerIn, session: Session = Depends(get_session)):
-    seller = Seller(name=body.name.strip())
-    session.add(seller)
-    session.commit()
-    return {"id": seller.id, "name": seller.name}
-
-
-@app.post("/drops", status_code=201)
-def create_drop(body: DropIn, session: Session = Depends(get_session)):
-    if session.get(Seller, body.seller_id) is None:
-        raise HTTPException(404, "No seller with that id.")
-    drop = drops.create_drop(session, **body.model_dump())
-    return drops.drop_summary(session, drop)
-
-
-@app.get("/drops")
-def list_drops(session: Session = Depends(get_session)):
-    """Drops currently taking orders (what a buyer can choose from)."""
-    return {"drops": [drops.drop_progress(session, d) for d in drops.list_open_drops(session)]}
-
-
-@app.get("/sellers/{seller_id}/drops")
-def seller_drops(seller_id: int, session: Session = Depends(get_session)):
-    """A seller's drops, newest first, with progress toward each minimum."""
-    if session.get(Seller, seller_id) is None:
-        raise HTTPException(404, "No seller with that id.")
-    rows = session.scalars(
-        select(Drop).where(Drop.seller_id == seller_id).order_by(Drop.id.desc()).limit(50)
-    ).all()
-    return {"drops": [drops.drop_progress(session, d) for d in rows]}
-
-
-@app.get("/drops/{drop_id}")
-def get_drop(drop_id: int, session: Session = Depends(get_session)):
+def my_drop(session: Session, shop: Seller, drop_id: int) -> Drop:
+    """One of the signed-in seller's own drops. Someone else's looks exactly like a missing one."""
     drop = session.get(Drop, drop_id)
-    if drop is None:
+    if drop is None or drop.seller_id != shop.id:
         raise drops.DropNotFound(f"No drop with id {drop_id}.")
-    return drops.drop_summary(session, drop)
-
-
-@app.post("/drops/{drop_id}/cancel")
-def cancel_drop(drop_id: int, session: Session = Depends(get_session), paypal=Depends(get_paypal)):
-    status = drops.cancel_drop(session, paypal, drop_id)
-    return {"id": drop_id, "status": status.value}
-
-
-# ---- buyer routes ----------------------------------------------------------
-
-@app.post("/drops/{drop_id}/orders", status_code=201)
-def place_order(
-    drop_id: int,
-    body: OrderIn,
-    session: Session = Depends(get_session),
-    paypal=Depends(get_paypal),
-    settings: Settings = Depends(get_settings),
-):
-    """Reserve stock, then start PayPal checkout. The buyer approves at approval_url."""
-    try:
-        order, approval_url = drops.place_order(
-            session,
-            paypal,
-            drop_id,
-            body.buyer_name,
-            body.buyer_email,
-            body.chat_session_id,
-            body.quantity,
-            return_url=f"{settings.public_api_url}/paypal/return",
-            cancel_url=f"{settings.public_api_url}/paypal/cancel",
-        )
-    except PayPalError:
-        raise HTTPException(502, "Could not start PayPal checkout. Please try again.")
-    return {
-        "order_id": order.id,
-        "approval_url": approval_url,
-        "amount": str(order.amount),
-        "reserved_until": order.reserved_until.isoformat(),
-    }
+    return drop
 
 
 def order_view(session: Session, order: Order) -> dict:
@@ -211,21 +126,117 @@ def order_view(session: Session, order: Order) -> dict:
     }
 
 
-@app.get("/orders/{order_id}")
-def get_order(order_id: int, session: Session = Depends(get_session)):
-    order = session.get(Order, order_id)
-    if order is None:
-        raise drops.OrderNotFound(f"No order with id {order_id}.")
-    return order_view(session, order)
+# ---- public ----------------------------------------------------------------
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
-@app.get("/buyers/{session_id}/orders")
-def buyer_orders(session_id: str, session: Session = Depends(get_session)):
-    """One buyer's orders, found by the chat session id their browser keeps."""
+@app.get("/drops")
+def list_drops(session: Session = Depends(get_session)):
+    """Drops currently taking orders (what a buyer can choose from)."""
+    return {"drops": [drops.drop_progress(session, d) for d in drops.list_open_drops(session)]}
+
+
+@app.get("/drops/{drop_id}")
+def get_drop(drop_id: int, session: Session = Depends(get_session)):
+    drop = session.get(Drop, drop_id)
+    if drop is None:
+        raise drops.DropNotFound(f"No drop with id {drop_id}.")
+    return drops.drop_summary(session, drop)
+
+
+# ---- seller routes ---------------------------------------------------------
+
+@app.post("/shop", status_code=201)
+def create_shop(body: ShopIn, user: User = Depends(require_user), session: Session = Depends(get_session)):
+    """The signed-in user opens their shop. One shop per person."""
+    if auth.shop_of(session, user) is not None:
+        raise HTTPException(409, "You already have a shop.")
+    shop = Seller(name=body.name.strip(), user_id=user.id)
+    session.add(shop)
+    session.commit()
+    return {"id": shop.id, "name": shop.name, "verified": shop.verified}
+
+
+@app.post("/drops", status_code=201)
+def create_drop(body: DropIn, shop: Seller = Depends(require_shop), session: Session = Depends(get_session)):
+    # create_drop refuses shops whose owner is not PayPal-verified (SellerNotVerified -> 403).
+    drop = drops.create_drop(session, seller_id=shop.id, **body.model_dump())
+    return drops.drop_summary(session, drop)
+
+
+@app.get("/me/drops")
+def my_drops(shop: Seller = Depends(require_shop), session: Session = Depends(get_session)):
+    """The signed-in seller's drops, newest first, with progress toward each minimum."""
     rows = session.scalars(
-        select(Order).where(Order.chat_session_id == session_id).order_by(Order.id.desc()).limit(20)
+        select(Drop).where(Drop.seller_id == shop.id).order_by(Drop.id.desc()).limit(50)
+    ).all()
+    return {"drops": [drops.drop_progress(session, d) for d in rows]}
+
+
+@app.post("/drops/{drop_id}/cancel")
+def cancel_drop(
+    drop_id: int,
+    shop: Seller = Depends(require_shop),
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+):
+    my_drop(session, shop, drop_id)  # only the owner can cancel
+    status = drops.cancel_drop(session, paypal, drop_id)
+    return {"id": drop_id, "status": status.value}
+
+
+# ---- buyer routes ----------------------------------------------------------
+
+@app.post("/drops/{drop_id}/orders", status_code=201)
+def place_order(
+    drop_id: int,
+    body: OrderIn,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+    settings: Settings = Depends(get_settings),
+):
+    """Reserve stock for the signed-in buyer, then start PayPal checkout. They approve at approval_url."""
+    try:
+        order, approval_url = drops.place_order(
+            session,
+            paypal,
+            drop_id,
+            user.name,
+            user.email,
+            buyer_chat_id(user),
+            body.quantity,
+            return_url=f"{settings.public_api_url}/paypal/return",
+            cancel_url=f"{settings.public_api_url}/paypal/cancel",
+            buyer_user_id=user.id,
+        )
+    except PayPalError:
+        raise HTTPException(502, "Could not start PayPal checkout. Please try again.")
+    return {
+        "order_id": order.id,
+        "approval_url": approval_url,
+        "amount": str(order.amount),
+        "reserved_until": order.reserved_until.isoformat(),
+    }
+
+
+@app.get("/me/orders")
+def my_orders(user: User = Depends(require_user), session: Session = Depends(get_session)):
+    rows = session.scalars(
+        select(Order).where(Order.buyer_user_id == user.id).order_by(Order.id.desc()).limit(20)
     ).all()
     return {"orders": [order_view(session, o) for o in rows]}
+
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: int, user: User = Depends(require_user), session: Session = Depends(get_session)):
+    order = session.get(Order, order_id)
+    if order is None or order.buyer_user_id != user.id:  # other people's orders look like missing ones
+        raise drops.OrderNotFound(f"No order with id {order_id}.")
+    return order_view(session, order)
 
 
 # ---- PayPal routes ---------------------------------------------------------
@@ -309,27 +320,18 @@ async def paypal_webhook(
 
 # ---- chat ------------------------------------------------------------------
 
-class ChatIn(BaseModel):
-    session_id: str = Field(min_length=1, max_length=64)
-    message: str = Field(min_length=1, max_length=2000)
-
-
-class SellerChatIn(ChatIn):
-    seller_id: int
-
-
 @app.post("/chat/seller")
 def chat_seller(
-    body: SellerChatIn,
+    body: ChatIn,
+    user: User = Depends(require_user),
+    shop: Seller = Depends(require_shop),
     session: Session = Depends(get_session),
     paypal=Depends(get_paypal),
     llm=Depends(get_llm),
     settings: Settings = Depends(get_settings),
 ):
-    if session.get(Seller, body.seller_id) is None:
-        raise HTTPException(404, "No seller with that id.")
     reply = agent.run_turn(
-        session, llm, paypal, settings, "seller", body.session_id, body.message, seller_id=body.seller_id
+        session, llm, paypal, settings, "seller", f"shop-{shop.id}", body.message, seller_id=shop.id, user=user
     )
     return {"reply": reply}
 
@@ -337,19 +339,31 @@ def chat_seller(
 @app.post("/chat/buyer")
 def chat_buyer(
     body: ChatIn,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
     paypal=Depends(get_paypal),
     llm=Depends(get_llm),
     settings: Settings = Depends(get_settings),
 ):
-    reply = agent.run_turn(session, llm, paypal, settings, "buyer", body.session_id, body.message)
+    reply = agent.run_turn(session, llm, paypal, settings, "buyer", buyer_chat_id(user), body.message, user=user)
     return {"reply": reply}
 
 
-@app.get("/chat/{role}/{session_id}/history")
-def chat_history(role: str, session_id: str, session: Session = Depends(get_session)):
+@app.get("/chat/{role}/history")
+def chat_history(
+    role: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+):
     """What the chat window shows after a reload: only the visible user and assistant text."""
-    if role not in agent.TOOLS_BY_ROLE:
+    if role == "buyer":
+        session_id = buyer_chat_id(user)
+    elif role == "seller":
+        shop = auth.shop_of(session, user)
+        if shop is None:
+            return {"messages": []}
+        session_id = f"shop-{shop.id}"
+    else:
         raise HTTPException(404, "Unknown chat role.")
     rows = session.scalars(
         select(ChatMessage)

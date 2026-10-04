@@ -148,3 +148,69 @@ def test_webhook_missing_headers_is_false_without_calling_paypal():
     client, seen = verification_client("SUCCESS")
     assert client.verify_webhook_signature(headers={}, event={}, webhook_id="WH1") is False
     assert not any("verify-webhook" in r.url.path for r in seen)
+
+
+# ---- Log in with PayPal ---------------------------------------------------------
+
+from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+from app.paypal import parse_login_profile  # noqa: E402
+
+
+def test_login_url_has_everything_paypal_needs():
+    url = make_client(lambda r: httpx.Response(200)).login_url(redirect_uri="https://app.test/cb", state="abc")
+    parts = urlparse(url)
+    q = {k: v[0] for k, v in parse_qs(parts.query).items()}
+    assert parts.netloc == "www.sandbox.paypal.com" and parts.path == "/connect"
+    assert q["client_id"] == "id" and q["response_type"] == "code" and q["state"] == "abc"
+    assert q["redirect_uri"] == "https://app.test/cb"
+    assert "openid" in q["scope"] and "email" in q["scope"] and "paypalattributes" in q["scope"]
+
+
+def test_exchange_code_uses_authorization_code_grant():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"access_token": "USER-TOKEN", "expires_in": 28800})
+
+    assert make_client(handler).exchange_login_code("the-code") == "USER-TOKEN"
+    body = parse_qs(seen[0].content.decode())
+    assert body["grant_type"] == ["authorization_code"] and body["code"] == ["the-code"]
+
+
+def test_exchange_code_failure_is_a_paypal_error():
+    with pytest.raises(PayPalError):
+        make_client(lambda r: httpx.Response(400, text="invalid_grant")).exchange_login_code("bad")
+
+
+def test_profile_from_the_paypalv1_1_shape():
+    out = parse_login_profile({
+        "user_id": "https://www.paypal.com/webapps/auth/identity/user/ABC123", "payer_id": "PAYER1",
+        "name": "Sam Lee", "verified_account": "true",
+        "emails": [{"value": "other@x.com", "primary": False}, {"value": "sam@x.com", "primary": True, "confirmed": True}]})
+    assert out == {"payer_id": "PAYER1", "email": "sam@x.com", "email_verified": True, "name": "Sam Lee", "verified_account": True}
+
+
+def test_profile_from_the_openid_shape_and_unverified_account():
+    out = parse_login_profile({"user_id": "https://www.paypal.com/webapps/auth/identity/user/XYZ", "email": "a@b.co",
+                               "email_verified": False, "given_name": "Ann", "family_name": "Ng", "verified_account": "false"})
+    assert out["payer_id"] == "XYZ" and out["name"] == "Ann Ng" and out["verified_account"] is False and out["email_verified"] is False
+
+
+def test_profile_without_an_id_or_email_is_refused():
+    with pytest.raises(PayPalError):
+        parse_login_profile({"name": "No Email", "payer_id": "P"})
+    with pytest.raises(PayPalError):
+        parse_login_profile({"email": "a@b.co"})
+
+
+def test_login_profile_request_carries_the_users_own_token():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"payer_id": "P", "email": "a@b.co", "name": "A"})
+
+    assert make_client(handler).get_login_profile("USER-TOKEN")["payer_id"] == "P"
+    assert seen[0].headers["authorization"] == "Bearer USER-TOKEN" and "paypalv1.1" in str(seen[0].url)

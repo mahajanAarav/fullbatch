@@ -21,6 +21,7 @@ from app.models import (
     DropStatus,
     Order,
     OrderStatus,
+    Seller,
     conversation_id,
 )
 
@@ -47,6 +48,10 @@ class DropNotOpen(DropError):
 
 
 class InvalidOrder(DropError):
+    pass
+
+
+class SellerNotVerified(DropError):
     pass
 
 
@@ -88,6 +93,17 @@ def create_drop(
 ) -> Drop:
     """Validate and insert a new open drop."""
     now = now or _now()
+
+    # Only shops whose owner has a PayPal-verified account may open drops. The rule lives here so
+    # every way of creating a drop (web form, chat assistant, scripts) is covered.
+    seller = session.get(Seller, seller_id)
+    if seller is None:
+        raise InvalidDrop("Unknown seller.")
+    if not seller.verified:
+        raise SellerNotVerified(
+            "Your PayPal account isn't verified yet, so you can't open drops. "
+            "Verify your PayPal account, then sign in again."
+        )
 
     if not item_name.strip():
         raise InvalidDrop("The item needs a name.")
@@ -138,6 +154,7 @@ def reserve_stock(
     chat_session_id: str,
     quantity: int,
     now: datetime | None = None,
+    buyer_user_id: int | None = None,
 ) -> Order:
     """
     Reserve units for a buyer, safely under concurrency.
@@ -172,6 +189,7 @@ def reserve_stock(
             drop_id=drop_id,
             buyer_name=buyer_name,
             buyer_email=buyer_email,
+            buyer_user_id=buyer_user_id,
             chat_session_id=chat_session_id,
             quantity=quantity,
             amount=drop.unit_price * quantity,
@@ -551,13 +569,16 @@ def place_order(
     quantity: int,
     return_url: str,
     cancel_url: str,
+    buyer_user_id: int | None = None,
 ) -> tuple[Order, str]:
     """
     Reserve stock and start PayPal checkout. Returns (order, approval_link).
     If PayPal fails, the reservation is released at once instead of holding
     the stock for 15 minutes, and the PayPalError is re-raised.
     """
-    order = reserve_stock(session, drop_id, buyer_name, buyer_email, chat_session_id, quantity)
+    order = reserve_stock(
+        session, drop_id, buyer_name, buyer_email, chat_session_id, quantity, buyer_user_id=buyer_user_id
+    )
     try:
         link = start_checkout(session, paypal, order.id, return_url, cancel_url)
     except PayPalError:

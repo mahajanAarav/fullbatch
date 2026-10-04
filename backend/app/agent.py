@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app import drops
 from app.config import Settings
 from app.llm import LLM
-from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, conversation_id
+from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, User, conversation_id
 from app.paypal import PayPalError
 
 log = logging.getLogger(__name__)
@@ -38,7 +38,6 @@ log = logging.getLogger(__name__)
 MAX_STEPS = 6        # model/tool round trips per turn, so a confused model cannot loop forever
 HISTORY_LIMIT = 30   # most recent stored messages sent to the model
 FALLBACK_REPLY = "Sorry, I got stuck on that. Could you rephrase or try again?"
-EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
 
 @dataclass
@@ -48,6 +47,7 @@ class ToolContext:
     settings: Settings
     chat_session_id: str
     seller_id: int | None = None  # set for seller conversations only
+    user: User | None = None  # the signed-in person, set by the server (never by the model)
 
 
 @dataclass(frozen=True)
@@ -167,21 +167,21 @@ def check_stock(ctx: ToolContext, a: DropIdArgs) -> dict:
 class PlaceOrderArgs(BaseModel):
     drop_id: int
     quantity: int = Field(gt=0)
-    buyer_name: str = Field(min_length=1, max_length=120)
-    buyer_email: str = Field(pattern=EMAIL_PATTERN, max_length=254, description="Where the receipt goes")
 
 
 def place_order(ctx: ToolContext, a: PlaceOrderArgs) -> dict:
+    # Who is buying comes from the signed-in account, never from anything the model supplies.
     order, link = drops.place_order(
         ctx.session,
         ctx.paypal,
         a.drop_id,
-        a.buyer_name,
-        a.buyer_email,
-        ctx.chat_session_id,  # supplied by the server, never by the model
+        ctx.user.name,
+        ctx.user.email,
+        ctx.chat_session_id,
         a.quantity,
         return_url=f"{ctx.settings.public_api_url}/paypal/return",
         cancel_url=f"{ctx.settings.public_api_url}/paypal/cancel",
+        buyer_user_id=ctx.user.id,
     )
     return {
         "order_id": order.id,
@@ -258,8 +258,8 @@ def system_prompt(role: str, settings: Settings) -> str:
         )
     return (
         f"You are the fullbatch assistant helping a buyer order from preorder drops. Now: {now}.\n{how_it_works}\n"
-        "Help the buyer pick a drop and quantity, ask for their name and email, confirm the order and total, "
-        "then call place_order and give them the approval link. Explain that approving only places a hold and "
+        "Help the buyer pick a drop and quantity (they are already signed in, so never ask for their name or "
+        "email), confirm the order and total, then call place_order and give them the approval link. Explain that approving only places a hold and "
         "that they pay only if the drop reaches its minimum. They have 15 minutes to approve before the "
         "reservation is released.\n" + rules
     )
@@ -359,11 +359,12 @@ def run_turn(
     session_id: str,
     user_text: str,
     seller_id: int | None = None,
+    user: User | None = None,
 ) -> str:
     """Handle one user message. Returns the assistant's reply text."""
     tools = {t.name: t for t in TOOLS_BY_ROLE[role]}
     specs = [t.spec() for t in tools.values()]
-    ctx = ToolContext(session, paypal, settings, chat_session_id=session_id, seller_id=seller_id)
+    ctx = ToolContext(session, paypal, settings, chat_session_id=session_id, seller_id=seller_id, user=user)
     conv_id = conversation_id(role, session_id)
 
     messages = load_history(session, conv_id)
