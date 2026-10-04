@@ -108,3 +108,43 @@ def test_bad_credentials_raise_paypal_error():
     with pytest.raises(PayPalError) as err:
         client.get_token()
     assert err.value.status_code == 401
+
+
+# ---- webhook verification --------------------------------------------------
+
+SIG_HEADERS = {
+    "paypal-transmission-id": "tid", "paypal-transmission-time": "2026-10-03T00:00:00Z",
+    "paypal-cert-url": "https://api.sandbox.paypal.com/cert", "paypal-auth-algo": "SHA256withRSA",
+    "paypal-transmission-sig": "sig",
+}
+
+
+def verification_client(status):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path == "/v1/oauth2/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        return httpx.Response(200, json={"verification_status": status})
+
+    return make_client(handler), seen
+
+
+def test_webhook_signature_success_sends_expected_fields():
+    client, seen = verification_client("SUCCESS")
+    assert client.verify_webhook_signature(headers=SIG_HEADERS, event={"a": 1}, webhook_id="WH1") is True
+    sent = json.loads(next(r for r in seen if "verify-webhook" in r.url.path).content)
+    assert sent["webhook_id"] == "WH1" and sent["webhook_event"] == {"a": 1}
+    assert sent["transmission_sig"] == "sig" and sent["cert_url"].endswith("/cert")
+
+
+def test_webhook_signature_failure_is_false():
+    client, _ = verification_client("FAILURE")
+    assert client.verify_webhook_signature(headers=SIG_HEADERS, event={}, webhook_id="WH1") is False
+
+
+def test_webhook_missing_headers_is_false_without_calling_paypal():
+    client, seen = verification_client("SUCCESS")
+    assert client.verify_webhook_signature(headers={}, event={}, webhook_id="WH1") is False
+    assert not any("verify-webhook" in r.url.path for r in seen)

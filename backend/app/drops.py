@@ -436,3 +436,50 @@ def _process_holds(session: Session, paypal, drop_id: int, now: datetime) -> Dro
             drop.settled_at = now
         session.commit()
     return status
+
+
+def release_reservation(session: Session, order_id: int, reason: str = "released") -> None:
+    """Give a reservation's stock back right away (buyer cancelled, or checkout failed)."""
+    order = session.execute(
+        select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if order is not None and order.status == OrderStatus.RESERVED:
+        order.status = OrderStatus.EXPIRED
+        _log(session, order.drop_id, "order_expired", order.id, {"reason": reason})
+    session.commit()
+
+
+def run_deadline_job(session_factory, paypal, now: datetime | None = None) -> dict:
+    """
+    The scheduled job. Safe to run as often as you like, from several places at once.
+      1. expire unpaid reservations whose time is up
+      2. settle every open drop that is past its deadline
+      3. finish drops that were decided but not fully processed (e.g. after a crash)
+    A problem with one drop is recorded and never stops the others.
+    """
+    now = now or _now()
+    summary = {"expired": 0, "settled": [], "errors": []}
+
+    with session_factory() as session:
+        summary["expired"] = expire_stale_reservations(session, now)
+        due = session.scalars(
+            select(Drop.id).where(Drop.status == DropStatus.OPEN, Drop.deadline <= now)
+        ).all()
+        unfinished = session.scalars(
+            select(Drop.id).where(
+                Drop.status != DropStatus.OPEN,
+                select(Order.id)
+                .where(Order.drop_id == Drop.id, Order.status == OrderStatus.AUTHORIZED)
+                .exists(),
+            )
+        ).all()
+
+    for drop_id in [*due, *unfinished]:
+        with session_factory() as session:
+            try:
+                settle_drop(session, paypal, drop_id, now=now)
+                summary["settled"].append(drop_id)
+            except Exception as err:  # keep going: one bad drop must not block the rest
+                session.rollback()
+                summary["errors"].append({"drop_id": drop_id, "error": str(err)[:200]})
+    return summary

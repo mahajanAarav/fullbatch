@@ -11,10 +11,14 @@ class FakePayPal:
         self.fail_capture: set[str] = set()      # authorization ids PayPal will reject
         self.crash_on_capture: str | None = None  # raise a non-PayPal error once, to simulate a crash
         self.on_authorize = None                  # optional callback to simulate a race
+        self.fail_create = False                  # make checkout creation fail
+        self.webhook_valid = True                 # what signature verification answers
 
     def create_order(self, *, amount, currency, description, return_url, cancel_url,
                      custom_id=None, request_id=None):
         self.request_ids.append(request_id)
+        if self.fail_create:
+            raise PayPalError("create order", 500, "boom")
         return f"PPO-{custom_id}", f"https://fake.paypal/approve/{custom_id}"
 
     def authorize_order(self, paypal_order_id, *, request_id=None):
@@ -40,3 +44,6 @@ class FakePayPal:
     def void_authorization(self, authorization_id, *, request_id=None):
         self.request_ids.append(request_id)
         self.voided.append(authorization_id)
+
+    def verify_webhook_signature(self, *, headers, event, webhook_id):
+        return self.webhook_valid

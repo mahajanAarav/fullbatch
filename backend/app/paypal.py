@@ -181,6 +181,30 @@ class PayPalClient:
             headers={"Content-Type": "application/json"},
         )
 
+    def verify_webhook_signature(self, *, headers, event: dict, webhook_id: str) -> bool:
+        """
+        Ask PayPal whether a webhook really came from PayPal.
+        `headers` are the request headers PayPal sent (lookup is case-insensitive in
+        FastAPI/Starlette). Never trust a webhook without calling this first.
+        """
+        fields = {
+            "transmission_id": "paypal-transmission-id",
+            "transmission_time": "paypal-transmission-time",
+            "cert_url": "paypal-cert-url",
+            "auth_algo": "paypal-auth-algo",
+            "transmission_sig": "paypal-transmission-sig",
+        }
+        body = {name: headers.get(header) for name, header in fields.items()}
+        if not all(body.values()):
+            return False  # missing signature headers: cannot be a real PayPal webhook
+        body["webhook_id"] = webhook_id
+        body["webhook_event"] = event
+        r = self._request(
+            "POST", "/v1/notifications/verify-webhook-signature",
+            step="verify webhook signature", json=body, ok=(200,),
+        )
+        return r.json().get("verification_status") == "SUCCESS"
+
     def close(self) -> None:
         self._http.close()
 
