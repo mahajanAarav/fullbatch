@@ -9,30 +9,33 @@ interface Props {
   intro: string
   suggestions: string[]
   onReply?: () => void // called after the assistant answers, so side panels can refresh
+  syncKey?: number // change this to make the chat re-read its history (e.g. a payment hold landed)
 }
 
 // The assistant relays the PayPal approval link in its text. Show that one as a real button.
 const isPayPalLink = (href?: string) => !!href && /(^|\/\/)([a-z0-9-]+\.)*paypal\.com\//i.test(href)
 
-export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply }: Props) {
+export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply, syncKey = 0 }: Props) {
   const [lines, setLines] = useState<ChatLine[]>([])
   const [loaded, setLoaded] = useState(false)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastSent = useRef('')
+  const sendingRef = useRef(false)
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
     chatHistory(role, sessionId)
-      .then((history) => !cancelled && setLines(history))
+      // Never overwrite the screen while a message is in flight; the next sync will catch up.
+      .then((history) => !cancelled && !sendingRef.current && setLines(history))
       .catch(() => undefined) // an empty chat is fine
       .finally(() => !cancelled && setLoaded(true))
     return () => {
       cancelled = true
     }
-  }, [role, sessionId])
+  }, [role, sessionId, syncKey])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -46,6 +49,7 @@ export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply }:
     setInput('')
     setError(null)
     setSending(true)
+    sendingRef.current = true
     try {
       const { reply } =
         role === 'seller' && sellerId !== undefined
@@ -62,12 +66,13 @@ export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply }:
             : 'Something went wrong.',
       )
     } finally {
+      sendingRef.current = false
       setSending(false)
     }
   }
 
   return (
-    <section className="chat card">
+    <section className="chat">
       <div className="chat-log" aria-live="polite">
         {loaded && lines.length === 0 && (
           <div className="chat-empty">

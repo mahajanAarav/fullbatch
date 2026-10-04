@@ -1,4 +1,4 @@
-import { Link, Route, Routes } from 'react-router-dom'
+import { NavLink, Link, Route, Routes } from 'react-router-dom'
 import Buy from './pages/Buy'
 import Landing from './pages/Landing'
 import OrderStatus from './pages/OrderStatus'
@@ -8,13 +8,15 @@ export default function App() {
   return (
     <>
       <header className="topbar">
-        <Link to="/" className="brand">
-          full<span>batch</span>
-        </Link>
-        <nav>
-          <Link to="/sell">Sell</Link>
-          <Link to="/buy">Buy</Link>
-        </nav>
+        <div className="wrap topbar-in">
+          <Link to="/" className="brand">
+            full<span>batch</span>
+          </Link>
+          <nav>
+            <NavLink to="/buy">Browse drops</NavLink>
+            <NavLink to="/sell">Sell</NavLink>
+          </nav>
+        </div>
       </header>
       <Routes>
         <Route path="/" element={<Landing />} />
@@ -25,7 +27,7 @@ export default function App() {
         <Route path="*" element={<Landing />} />
       </Routes>
       <footer className="foot">
-        Demo runs on the PayPal sandbox: no real money moves. Chat assistant powered by AI; it can make mistakes.
+        <div className="wrap">Demo on the PayPal sandbox. No real money moves. The assistant is AI and can make mistakes.</div>
       </footer>
     </>
   )

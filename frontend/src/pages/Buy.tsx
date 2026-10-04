@@ -1,24 +1,52 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { buyerOrders, listOpenDrops, type Order } from '../api'
+import { buyerOrders, listOpenDrops, type Drop, type Order } from '../api'
+import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { DropCard } from '../components/DropCard'
+import { ReserveDialog } from '../components/ReserveDialog'
+import { Toast } from '../components/Toast'
 import { money } from '../format'
 import { usePolling } from '../hooks'
 import { getBuyerSessionId } from '../identity'
 
 const ORDER_STATUS_TEXT: Record<Order['status'], string> = {
-  reserved: 'Waiting for your PayPal approval',
-  authorized: 'Approved · on hold, not charged yet',
+  reserved: 'Waiting for PayPal approval',
+  authorized: 'On hold · not charged yet',
   captured: 'Charged',
-  voided: 'Released · you were not charged',
+  voided: 'Released · not charged',
   expired: 'Reservation expired',
   failed: 'Payment problem',
 }
 
 export default function Buy() {
   const sessionId = getBuyerSessionId()
+  const [reserving, setReserving] = useState<Drop | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [chatSync, setChatSync] = useState(0)
+  const clearToast = useCallback(() => setToast(null), [])
+
   const drops = usePolling(listOpenDrops)
-  const orders = usePolling(() => buyerOrders(sessionId))
+  // While a payment is waiting on PayPal, check every few seconds so the page updates by itself.
+  const orders = usePolling(
+    () => buyerOrders(sessionId),
+    (list) => (list?.some((o) => o.status === 'reserved') ? 3_000 : 10_000),
+  )
+  const seen = useRef<Map<number, Order['status']>>(new Map())
+
+  useEffect(() => {
+    const list = orders.data
+    if (!list) return
+    for (const o of list) {
+      const before = seen.current.get(o.id)
+      if (before === 'reserved' && o.status === 'authorized') {
+        setToast(`Payment on hold: ${money(o.amount, o.currency)} for ${o.quantity} × ${o.item_name}. You haven’t been charged.`)
+        setChatSync((n) => n + 1) // pull in the confirmation the server added to the chat
+        drops.reload()
+      }
+      seen.current.set(o.id, o.status)
+    }
+  }, [orders.data]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const refresh = () => {
     drops.reload()
@@ -26,48 +54,65 @@ export default function Buy() {
   }
 
   return (
-    <main className="workspace">
-      <div className="workspace-head">
-        <div>
-          <p className="eyebrow">Buyer</p>
-          <h1>What’s dropping</h1>
+    <div className="shell">
+      <main className="wrap main">
+        <div className="page-head">
+          <div>
+            <h1>Open drops</h1>
+            <p className="muted">Reserve what you want. You’re only charged if the drop reaches its minimum.</p>
+          </div>
         </div>
-      </div>
 
-      <div className="columns">
-        <Chat
-          key={sessionId}
-          role="buyer"
-          sessionId={sessionId}
-          intro="Ask what’s available, pick a drop, and I’ll reserve your order and send you a PayPal link to approve."
-          suggestions={['What can I buy right now?', 'Will I be charged right away?']}
-          onReply={refresh}
-        />
+        {drops.error && <p className="error">{drops.error}</p>}
+        {drops.data && drops.data.length === 0 && <p className="empty">Nothing is open right now. Check back soon.</p>}
+        <div className="grid">
+          {drops.data?.map((d) => (
+            <DropCard
+              key={d.id}
+              drop={d}
+              action={
+                <button className="button button-block" disabled={d.units_remaining === 0} onClick={() => setReserving(d)}>
+                  {d.units_remaining === 0 ? 'Sold out' : 'Reserve'}
+                </button>
+              }
+            />
+          ))}
+        </div>
 
-        <aside className="panel">
-          <h2>Open drops</h2>
-          {drops.error && <p className="error">{drops.error}</p>}
-          {drops.data && drops.data.length === 0 && <p className="muted empty">Nothing is open right now. Check back soon.</p>}
-          {drops.data?.map((d) => <DropCard key={d.id} drop={d} />)}
-
-          {orders.data && orders.data.length > 0 && (
-            <>
-              <h2 className="panel-gap">Your orders</h2>
+        {orders.data && orders.data.length > 0 && (
+          <section className="section">
+            <h2>Your orders</h2>
+            <div className="list card">
               {orders.data.map((o) => (
-                <Link key={o.id} to={`/orders/${o.id}`} className="card order-row">
+                <Link key={o.id} to={`/orders/${o.id}`} className="list-row">
                   <div>
                     <strong>
                       {o.quantity} × {o.item_name}
                     </strong>
-                    <span className="muted small">{ORDER_STATUS_TEXT[o.status]}</span>
+                    <span className={`badge badge-${o.status}`}>{ORDER_STATUS_TEXT[o.status]}</span>
                   </div>
-                  <span>{money(o.amount, o.currency)}</span>
+                  <strong>{money(o.amount, o.currency)}</strong>
                 </Link>
               ))}
-            </>
-          )}
-        </aside>
-      </div>
-    </main>
+            </div>
+          </section>
+        )}
+      </main>
+
+      <AssistantDock label="Assistant">
+        <Chat
+          key={sessionId}
+          role="buyer"
+          sessionId={sessionId}
+          intro="Ask me anything about the drops, or have me place an order. You can also just use the Reserve buttons."
+          suggestions={['What’s available?', 'Will I be charged right away?']}
+          onReply={refresh}
+          syncKey={chatSync}
+        />
+      </AssistantDock>
+
+      <ReserveDialog drop={reserving} onClose={() => setReserving(null)} />
+      <Toast message={toast} onDone={clearToast} />
+    </div>
   )
 }

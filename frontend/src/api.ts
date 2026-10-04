@@ -96,3 +96,26 @@ export const sendSellerChat = (sellerId: number, sessionId: string, message: str
   post<{ reply: string }>('/chat/seller', { seller_id: sellerId, session_id: sessionId, message })
 export const sendBuyerChat = (sessionId: string, message: string) =>
   post<{ reply: string }>('/chat/buyer', { session_id: sessionId, message })
+
+export interface NewDrop {
+  seller_id: number
+  item_name: string
+  unit_price: string
+  quantity_total: number
+  minimum_units: number
+  max_per_buyer: number
+  deadline: string // ISO 8601 with a timezone
+}
+export const createDrop = (drop: NewDrop) => post<Drop>('/drops', drop)
+export const cancelDrop = (id: number) => post<{ id: number; status: string }>(`/drops/${id}/cancel`, {})
+
+export interface PlacedOrder {
+  order_id: number
+  approval_url: string
+  amount: string
+  reserved_until: string
+}
+export const placeOrder = (
+  dropId: number,
+  body: { buyer_name: string; buyer_email: string; chat_session_id: string; quantity: number },
+) => post<PlacedOrder>(`/drops/${dropId}/orders`, body)

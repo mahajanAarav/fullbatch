@@ -12,7 +12,7 @@ export function useNow(intervalMs = 30_000): number {
 
 // Load data now, then keep it fresh. `reload()` forces an immediate refresh
 // (used right after the chat agent does something).
-export function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 8_000, enabled = true) {
+export function usePolling<T>(fetcher: () => Promise<T>, interval: number | ((latest: T | null) => number) = 8_000, enabled = true) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fetcherRef = useRef(fetcher)
@@ -30,6 +30,9 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 8_000, ena
     }
   }, [])
 
+  // The interval may depend on the data itself (e.g. poll faster while a payment is pending).
+  const intervalMs = typeof interval === 'function' ? interval(data) : interval
+
   useEffect(() => {
     if (!enabled) return
     reload()
@@ -38,4 +41,29 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 8_000, ena
   }, [reload, intervalMs, enabled])
 
   return { data, error, reload }
+}
+
+// A boolean remembered in this browser (e.g. whether the assistant panel is open).
+export function useStoredFlag(key: string, initial: () => boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(key)
+      if (saved !== null) return saved === '1'
+    } catch {
+      /* storage blocked */
+    }
+    return initial()
+  })
+  const set = useCallback(
+    (v: boolean) => {
+      setValue(v)
+      try {
+        localStorage.setItem(key, v ? '1' : '0')
+      } catch {
+        /* ignore */
+      }
+    },
+    [key],
+  )
+  return [value, set]
 }
