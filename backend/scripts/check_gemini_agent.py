@@ -1,10 +1,12 @@
 """
-Live check: the real Gemini model driving the agent end to end.
+Live check: a real language model driving the agent end to end.
 
 Uses a throwaway Postgres and a FAKE PayPal, so no real orders or payments are
 created. It does call the real Gemini API (free tier) and uses a few requests.
 
-    python backend/scripts/check_gemini_agent.py
+    python backend/scripts/check_gemini_agent.py [--provider gemini|groq|auto]
+
+--provider picks which model to test (default auto = Gemini, then Groq as the fallback).
 """
 
 import sys
@@ -21,7 +23,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app import agent  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.gemini import from_env  # noqa: E402
+from app import gemini, groq, llm_factory  # noqa: E402
 from app.models import Base, ChatMessage, Drop, Order, Seller  # noqa: E402
 from tests.fakes import FakePayPal  # noqa: E402
 
@@ -53,7 +55,10 @@ def converse(session, llm, paypal, role, session_id, lines, seller_id=None):
 
 
 def main() -> None:
-    llm, paypal = from_env(), FakePayPal()
+    provider = sys.argv[sys.argv.index("--provider") + 1] if "--provider" in sys.argv else "auto"
+    llm = {"gemini": gemini.from_env, "groq": groq.from_env, "auto": llm_factory.from_env}[provider]()
+    print(f"Testing provider: {provider}")
+    paypal = FakePayPal()
     server = pixeltable_pgserver.get_server(tempfile.mkdtemp(), cleanup_mode="delete")
     engine = create_engine(server.get_uri().replace("postgresql://", "postgresql+psycopg://", 1))
     Base.metadata.create_all(engine)

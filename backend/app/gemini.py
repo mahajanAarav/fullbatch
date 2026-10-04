@@ -38,6 +38,7 @@ DEFAULT_MODELS = (
 )
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 RETRY_DELAYS = (1.0, 3.0)  # seconds to wait before the 2nd and 3rd attempt
+SKIP_SIGNATURE_CHECK = "skip_thought_signature_validator"
 MAX_RETRY_WAIT = 20.0      # never keep a chatting user waiting longer than this for a retry
 
 
@@ -201,10 +202,15 @@ def to_contents(messages: list[dict]) -> list[dict]:
             parts: list[dict] = []
             if m.get("text"):
                 parts.append({"text": m["text"]})
-            for call in m.get("tool_calls") or []:
+            for i, call in enumerate(m.get("tool_calls") or []):
                 part = {"functionCall": {"id": call["id"], "name": call["name"], "args": call.get("args") or {}}}
                 if call.get("signature"):
                     part["thoughtSignature"] = call["signature"]
+                elif i == 0:
+                    # A call made by another provider (e.g. Groq) has no signature, and Gemini
+                    # refuses history without one on the first call. Google's documented
+                    # bypass value is accepted (checked against the real API).
+                    part["thoughtSignature"] = SKIP_SIGNATURE_CHECK
                 parts.append(part)
             add("model", parts)
         elif m["role"] == "tool":

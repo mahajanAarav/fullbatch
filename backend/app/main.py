@@ -44,10 +44,10 @@ def get_paypal():
 
 @lru_cache
 def get_llm():
-    """The language model the agent talks to (Gemini). Imported here so tests need no API key."""
-    from app.gemini import from_env as gemini_from_env
+    """The language model the agent talks to (Gemini, then Groq). Imported here so tests need no API keys."""
+    from app.llm_factory import from_env as llm_from_env
 
-    return gemini_from_env()
+    return llm_from_env()
 
 
 # ---- turn drop-engine errors into proper HTTP answers ----------------------

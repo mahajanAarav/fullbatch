@@ -261,7 +261,8 @@ def system_prompt(role: str, settings: Settings) -> str:
         "How fullbatch works: a seller opens a limited 'drop' with a price, quantity, a minimum "
         "number of units and a deadline. Buyers' payments are only HELD on PayPal, not charged. "
         "At the deadline, if the minimum was reached every hold is charged; if not, every hold is "
-        "released and nobody pays anything."
+        "released and nobody pays anything. A buyer's stock reservation lasts only 15 minutes, which is the "
+        "window to approve on PayPal; once approved, the hold lasts until the deadline."
     )
     rules = (
         "Rules: use tools for every fact about drops, stock, prices and orders; never guess or invent "
@@ -273,14 +274,16 @@ def system_prompt(role: str, settings: Settings) -> str:
             f"You are the fullbatch assistant helping a small seller (home baker, market vendor) run preorder drops. "
             f"Now: {now}.\n{how_it_works}\n"
             "To create a drop you need: item, price, quantity, minimum units and deadline. Ask for anything missing, "
-            "then confirm the details back before creating it. Before cancelling a drop, ask the seller to confirm, "
+            "then confirm the details back before creating it. Each buyer may order at most 4 units unless the "
+            "seller asks for a different limit. Before cancelling a drop, ask the seller to confirm, "
             "and only then call cancel_drop with confirm=true.\n" + rules
         )
     return (
         f"You are the fullbatch assistant helping a buyer order from preorder drops. Now: {now}.\n{how_it_works}\n"
         "Help the buyer pick a drop and quantity, ask for their name and email, confirm the order and total, "
         "then call place_order and give them the approval link. Explain that approving only places a hold and "
-        "that they pay only if the drop reaches its minimum. Their stock reservation lasts 15 minutes.\n" + rules
+        "that they pay only if the drop reaches its minimum. They have 15 minutes to approve before the "
+        "reservation is released.\n" + rules
     )
 
 
