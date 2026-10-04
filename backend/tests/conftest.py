@@ -1,0 +1,79 @@
+"""
+Shared test fixtures.
+
+Tests run against a real, throwaway Postgres (bundled in the pip package
+pixeltable-pgserver), because the row locking we rely on does not exist in SQLite.
+"""
+
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+
+import pixeltable_pgserver
+import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
+
+# Make `import app...` work no matter where pytest is started from.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.models import Base, Seller  # noqa: E402
+from app import drops  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def engine():
+    """Start one Postgres for the whole test run and create the tables."""
+    data_dir = tempfile.mkdtemp()
+    server = pixeltable_pgserver.get_server(data_dir, cleanup_mode="delete")
+    url = server.get_uri().replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_engine(url, pool_size=30, max_overflow=0)
+    Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+    server.cleanup()
+
+
+@pytest.fixture
+def session_factory(engine):
+    """Gives each test empty tables. Tests that need many sessions use this directly."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("TRUNCATE drop_events, orders, drops, sellers RESTART IDENTITY CASCADE")
+        )
+    return sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def session(session_factory) -> Session:
+    with session_factory() as s:
+        yield s
+
+
+@pytest.fixture
+def seller(session) -> Seller:
+    s = Seller(name="Test Bakery")
+    session.add(s)
+    session.commit()
+    return s
+
+
+@pytest.fixture
+def make_drop(session, seller):
+    """Build a drop with sensible defaults. Override only what a test cares about."""
+
+    def _make(**overrides):
+        args = dict(
+            seller_id=seller.id,
+            item_name="Sourdough loaf",
+            unit_price=Decimal("9.00"),
+            quantity_total=10,
+            minimum_units=5,
+            deadline=datetime.now(timezone.utc) + timedelta(days=3),
+        )
+        args.update(overrides)
+        return drops.create_drop(session, **args)
+
+    return _make
