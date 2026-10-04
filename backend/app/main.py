@@ -128,6 +128,23 @@ def create_drop(body: DropIn, session: Session = Depends(get_session)):
     return drops.drop_summary(session, drop)
 
 
+@app.get("/drops")
+def list_drops(session: Session = Depends(get_session)):
+    """Drops currently taking orders (what a buyer can choose from)."""
+    return {"drops": [drops.drop_summary(session, d) for d in drops.list_open_drops(session)]}
+
+
+@app.get("/sellers/{seller_id}/drops")
+def seller_drops(seller_id: int, session: Session = Depends(get_session)):
+    """A seller's drops, newest first, with progress toward each minimum."""
+    if session.get(Seller, seller_id) is None:
+        raise HTTPException(404, "No seller with that id.")
+    rows = session.scalars(
+        select(Drop).where(Drop.seller_id == seller_id).order_by(Drop.id.desc()).limit(50)
+    ).all()
+    return {"drops": [drops.drop_progress(session, d) for d in rows]}
+
+
 @app.get("/drops/{drop_id}")
 def get_drop(drop_id: int, session: Session = Depends(get_session)):
     drop = session.get(Drop, drop_id)
@@ -175,21 +192,40 @@ def place_order(
     }
 
 
-@app.get("/orders/{order_id}")
-def get_order(order_id: int, session: Session = Depends(get_session)):
-    order = session.get(Order, order_id)
-    if order is None:
-        raise drops.OrderNotFound(f"No order with id {order_id}.")
+def order_view(session: Session, order: Order) -> dict:
     drop = session.get(Drop, order.drop_id)
+    progress = drops.drop_progress(session, drop)
     return {
         "id": order.id,
         "status": order.status.value,
         "quantity": order.quantity,
         "amount": str(order.amount),
+        "currency": drop.currency,
+        "reserved_until": order.reserved_until.isoformat(),
         "drop_id": drop.id,
         "item_name": drop.item_name,
         "drop_status": drop.status.value,
+        "deadline": drop.deadline.isoformat(),
+        "minimum_units": drop.minimum_units,
+        "paid_up_units": progress["paid_up_units"],
     }
+
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: int, session: Session = Depends(get_session)):
+    order = session.get(Order, order_id)
+    if order is None:
+        raise drops.OrderNotFound(f"No order with id {order_id}.")
+    return order_view(session, order)
+
+
+@app.get("/buyers/{session_id}/orders")
+def buyer_orders(session_id: str, session: Session = Depends(get_session)):
+    """One buyer's orders, found by the chat session id their browser keeps."""
+    rows = session.scalars(
+        select(Order).where(Order.chat_session_id == session_id).order_by(Order.id.desc()).limit(20)
+    ).all()
+    return {"orders": [order_view(session, o) for o in rows]}
 
 
 # ---- PayPal routes ---------------------------------------------------------

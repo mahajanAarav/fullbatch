@@ -528,3 +528,36 @@ def place_order(
         release_reservation(session, order.id, reason="checkout_failed")
         raise
     return order, link
+
+
+def drop_progress(session: Session, drop: Drop) -> dict:
+    """A drop with live stock numbers AND how far along it is toward its minimum."""
+    counts = dict(
+        session.execute(
+            select(Order.status, func.coalesce(func.sum(Order.quantity), 0))
+            .where(Order.drop_id == drop.id)
+            .group_by(Order.status)
+        ).all()
+    )
+    units = {status.value: int(counts.get(status, 0)) for status in OrderStatus}
+    # Only buyers who approved on PayPal (a hold is in place) count toward the minimum.
+    paid_up = units["authorized"] + units["captured"]
+    return {
+        **drop_summary(session, drop),
+        "units_by_order_status": units,
+        "paid_up_units": paid_up,
+        "minimum_met_so_far": paid_up >= drop.minimum_units,
+    }
+
+
+def list_open_drops(session: Session, now: datetime | None = None, limit: int = 20) -> list[Drop]:
+    """Drops that are still taking orders, soonest deadline first."""
+    now = now or _now()
+    return list(
+        session.scalars(
+            select(Drop)
+            .where(Drop.status == DropStatus.OPEN, Drop.deadline > now)
+            .order_by(Drop.deadline)
+            .limit(limit)
+        )
+    )

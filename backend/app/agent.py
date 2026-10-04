@@ -135,22 +135,7 @@ class DropIdArgs(BaseModel):
 
 
 def get_drop_status(ctx: ToolContext, a: DropIdArgs) -> dict:
-    drop = _own_drop(ctx, a.drop_id)
-    counts = dict(
-        ctx.session.execute(
-            select(Order.status, func.coalesce(func.sum(Order.quantity), 0))
-            .where(Order.drop_id == drop.id)
-            .group_by(Order.status)
-        ).all()
-    )
-    units = {status.value: int(counts.get(status, 0)) for status in OrderStatus}
-    return {
-        **drops.drop_summary(ctx.session, drop),
-        "units_by_order_status": units,
-        # Only buyers who approved on PayPal (a hold is in place) count toward the minimum.
-        "paid_up_units": units["authorized"] + units["captured"],
-        "minimum_met_so_far": units["authorized"] + units["captured"] >= drop.minimum_units,
-    }
+    return drops.drop_progress(ctx.session, _own_drop(ctx, a.drop_id))
 
 
 class CancelDropArgs(BaseModel):
@@ -169,14 +154,7 @@ def cancel_drop(ctx: ToolContext, a: CancelDropArgs) -> dict:
 # ---- buyer tools -----------------------------------------------------------
 
 def list_open_drops(ctx: ToolContext, a: NoArgs) -> dict:
-    now = datetime.now(timezone.utc)
-    rows = ctx.session.scalars(
-        select(Drop)
-        .where(Drop.status == DropStatus.OPEN, Drop.deadline > now)
-        .order_by(Drop.deadline)
-        .limit(10)
-    ).all()
-    return {"drops": [drops.drop_summary(ctx.session, d) for d in rows]}
+    return {"drops": [drops.drop_summary(ctx.session, d) for d in drops.list_open_drops(ctx.session, limit=10)]}
 
 
 def check_stock(ctx: ToolContext, a: DropIdArgs) -> dict:

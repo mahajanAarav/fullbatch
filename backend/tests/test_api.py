@@ -270,3 +270,41 @@ def test_deadline_job_one_bad_drop_does_not_block_others(client, session_factory
     summary = drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))
     assert len(summary["errors"]) == 1 and summary["errors"][0]["drop_id"] == bad["id"]
     assert client.get(f"/orders/{good_order}").json()["status"] == "captured"
+
+
+# ---- read routes for the frontend -------------------------------------------
+
+def test_open_drops_list_excludes_closed_ones(client):
+    open_drop = make_drop(client, item_name="Open one").json()
+    closed = make_drop(client, item_name="Closed one").json()
+    client.post(f"/drops/{closed['id']}/cancel")
+    names = [d["item_name"] for d in client.get("/drops").json()["drops"]]
+    assert names == ["Open one"] and open_drop["id"]
+
+
+def test_seller_drops_show_progress_toward_the_minimum(client):
+    drop = make_drop(client, minimum_units=3).json()
+    paid_order(client, drop["id"], 2, "Ann")
+    client.post(f"/drops/{drop['id']}/orders", json=order_body(quantity=1, buyer_name="Ben"))  # reserved only
+    seller_id = drop["seller_id"]
+    got = client.get(f"/sellers/{seller_id}/drops").json()["drops"][0]
+    assert got["paid_up_units"] == 2 and got["minimum_met_so_far"] is False
+    assert got["units_by_order_status"]["reserved"] == 1 and got["units_remaining"] == 7
+    assert client.get("/sellers/999/drops").status_code == 404
+
+
+def test_buyer_orders_are_found_by_session_and_not_leaked(client):
+    drop = make_drop(client).json()
+    client.post(f"/drops/{drop['id']}/orders", json=order_body(chat_session_id="mine", quantity=2))
+    client.post(f"/drops/{drop['id']}/orders", json=order_body(chat_session_id="theirs", buyer_name="Ben"))
+    mine = client.get("/buyers/mine/orders").json()["orders"]
+    assert len(mine) == 1 and mine[0]["quantity"] == 2 and mine[0]["item_name"] == "Sourdough"
+    assert client.get("/buyers/nobody/orders").json() == {"orders": []}
+
+
+def test_order_view_has_what_the_confirmation_page_needs(client):
+    drop = make_drop(client, minimum_units=5).json()
+    order_id = paid_order(client, drop["id"], 2, "Ann")
+    view = client.get(f"/orders/{order_id}").json()
+    assert view["minimum_units"] == 5 and view["paid_up_units"] == 2
+    assert view["deadline"] and view["reserved_until"] and view["currency"] == "USD"
