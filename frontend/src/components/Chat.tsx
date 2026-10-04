@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ApiError, chatHistory, sendBuyerChat, sendSellerChat, type ChatLine } from '../api'
+import { ApiError, chatHistory, sendChat, type ChatLine } from '../api'
 
 interface Props {
   role: 'seller' | 'buyer'
-  sessionId: string
-  sellerId?: number
   intro: string
   suggestions: string[]
   onReply?: () => void // called after the assistant answers, so side panels can refresh
@@ -15,7 +13,7 @@ interface Props {
 // The assistant relays the PayPal approval link in its text. Show that one as a real button.
 const isPayPalLink = (href?: string) => !!href && /(^|\/\/)([a-z0-9-]+\.)*paypal\.com\//i.test(href)
 
-export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply, syncKey = 0 }: Props) {
+export function Chat({ role, intro, suggestions, onReply, syncKey = 0 }: Props) {
   const [lines, setLines] = useState<ChatLine[]>([])
   const [loaded, setLoaded] = useState(false)
   const [input, setInput] = useState('')
@@ -27,7 +25,7 @@ export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply, s
 
   useEffect(() => {
     let cancelled = false
-    chatHistory(role, sessionId)
+    chatHistory(role)
       // Never overwrite the screen while a message is in flight; the next sync will catch up.
       .then((history) => !cancelled && !sendingRef.current && setLines(history))
       .catch(() => undefined) // an empty chat is fine
@@ -35,7 +33,7 @@ export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply, s
     return () => {
       cancelled = true
     }
-  }, [role, sessionId, syncKey])
+  }, [role, syncKey])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -51,10 +49,7 @@ export function Chat({ role, sessionId, sellerId, intro, suggestions, onReply, s
     setSending(true)
     sendingRef.current = true
     try {
-      const { reply } =
-        role === 'seller' && sellerId !== undefined
-          ? await sendSellerChat(sellerId, sessionId, message)
-          : await sendBuyerChat(sessionId, message)
+      const { reply } = await sendChat(role, message)
       setLines((prev) => [...prev, { role: 'assistant', text: reply }])
       onReply?.()
     } catch (e) {

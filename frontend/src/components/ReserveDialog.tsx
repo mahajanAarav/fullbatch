@@ -1,19 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { placeOrder, type Drop } from '../api'
+import { useAuth } from '../authContext'
 import { money, whenText } from '../format'
-import { getBuyerSessionId } from '../identity'
 import { Modal } from './Modal'
-
-const DETAILS_KEY = 'fullbatch.buyerDetails'
-
-function savedDetails(): { name: string; email: string } {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(DETAILS_KEY) ?? '{}')
-    return { name: String(parsed.name ?? ''), email: String(parsed.email ?? '') }
-  } catch {
-    return { name: '', email: '' }
-  }
-}
 
 // Reserve units, then go straight to PayPal to approve the hold. No chat needed.
 export function ReserveDialog({ drop, onClose }: { drop: Drop | null; onClose: () => void }) {
@@ -25,9 +14,9 @@ export function ReserveDialog({ drop, onClose }: { drop: Drop | null; onClose: (
 }
 
 function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
+  const { me } = useAuth()
   const maxQty = Math.max(1, Math.min(drop.max_per_buyer, drop.units_remaining))
   const [quantity, setQuantity] = useState(1)
-  const [{ name, email }, setDetails] = useState(savedDetails)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const total = Number(drop.unit_price) * quantity
@@ -38,17 +27,7 @@ function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
     setBusy(true)
     setError(null)
     try {
-      localStorage.setItem(DETAILS_KEY, JSON.stringify({ name, email }))
-    } catch {
-      /* not essential */
-    }
-    try {
-      const placed = await placeOrder(drop.id, {
-        buyer_name: name.trim(),
-        buyer_email: email.trim(),
-        chat_session_id: getBuyerSessionId(),
-        quantity,
-      })
+      const placed = await placeOrder(drop.id, quantity)
       window.location.assign(placed.approval_url) // off to PayPal; PayPal returns to /orders/:id
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not reserve. Please try again.')
@@ -77,15 +56,11 @@ function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
         </div>
       </div>
 
-      <label>
-        Full name
-        <input value={name} onChange={(e) => setDetails({ name: e.target.value, email })} autoComplete="name" required maxLength={120} />
-      </label>
-      <label>
-        Email for your receipt
-        <input type="email" value={email} onChange={(e) => setDetails({ name, email: e.target.value })} autoComplete="email" required maxLength={254} />
-      </label>
-
+      {me?.user && (
+        <p className="who muted small">
+          Reserving as <strong>{me.user.name}</strong> · {me.user.email}
+        </p>
+      )}
       <p className="note">
         You’ll approve a <strong>hold</strong> on PayPal. You are charged only if this drop reaches {drop.minimum_units} units by{' '}
         {whenText(drop.deadline)}. Otherwise the hold is released.
@@ -96,7 +71,7 @@ function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
         <button type="button" className="button button-ghost" onClick={onClose}>
           Cancel
         </button>
-        <button className="button" disabled={busy || !name.trim() || !email.trim()}>
+        <button className="button" disabled={busy}>
           {busy ? 'Reserving…' : 'Continue to PayPal'}
         </button>
       </div>

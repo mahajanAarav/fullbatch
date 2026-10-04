@@ -14,6 +14,7 @@ echo "Starting local database..."
 export DATABASE_URL="postgresql+psycopg://postgres:@/postgres?host=$ROOT/backend/.devdb"
 export FRONTEND_URL="http://localhost:5173"
 export PUBLIC_API_URL="http://localhost:8000"
+export DEV_LOGIN=1   # local-only sign-in, because PayPal login needs a public https address
 
 cleanup() { kill "$API_PID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM

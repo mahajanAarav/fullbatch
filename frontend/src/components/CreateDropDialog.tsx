@@ -11,15 +11,15 @@ function defaultDeadline(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-export function CreateDropDialog({ open, sellerId, onClose, onCreated }: { open: boolean; sellerId: number; onClose: () => void; onCreated: () => void }) {
+export function CreateDropDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   return (
     <Modal open={open} onClose={onClose} title="New drop">
-      {open && <Form sellerId={sellerId} onClose={onClose} onCreated={onCreated} />}
+      {open && <Form onClose={onClose} onCreated={onCreated} />}
     </Modal>
   )
 }
 
-function Form({ sellerId, onClose, onCreated }: { sellerId: number; onClose: () => void; onCreated: () => void }) {
+function Form({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [item, setItem] = useState('')
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('12')
@@ -38,7 +38,6 @@ function Form({ sellerId, onClose, onCreated }: { sellerId: number; onClose: () 
     setError(null)
     try {
       await createDrop({
-        seller_id: sellerId,
         item_name: item.trim(),
         unit_price: Number(price).toFixed(2),
         quantity_total: Number(quantity),

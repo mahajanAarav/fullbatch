@@ -80,25 +80,28 @@ const post = <T>(path: string, body: unknown) =>
     body: JSON.stringify(body),
   })
 
-export const createSeller = (name: string) => post<{ id: number; name: string }>('/sellers', { name })
+export interface Me {
+  user: { id: number; name: string; email: string; paypal_verified: boolean; is_dev: boolean } | null
+  shop: { id: number; name: string; verified: boolean } | null
+  dev_login: boolean // the server allows the local-only dev sign-in
+}
+
+export const getMe = () => request<Me>('/auth/me')
+export const devLogin = (body: { name: string; email: string; verified: boolean }) => post<Me>('/auth/dev-login', body)
+export const logout = () => post<{ ok: boolean }>('/auth/logout', {})
+export const createShop = (name: string) => post<{ id: number; name: string; verified: boolean }>('/shop', { name })
+
 export const listOpenDrops = () => request<{ drops: Drop[] }>('/drops').then((r) => r.drops)
-export const sellerDrops = (sellerId: number) =>
-  request<{ drops: Drop[] }>(`/sellers/${sellerId}/drops`).then((r) => r.drops)
-export const buyerOrders = (sessionId: string) =>
-  request<{ orders: Order[] }>(`/buyers/${encodeURIComponent(sessionId)}/orders`).then((r) => r.orders)
+export const myDrops = () => request<{ drops: Drop[] }>('/me/drops').then((r) => r.drops)
+export const myOrders = () => request<{ orders: Order[] }>('/me/orders').then((r) => r.orders)
 export const getOrder = (id: number) => request<Order>(`/orders/${id}`)
 
-export const chatHistory = (role: 'seller' | 'buyer', sessionId: string) =>
-  request<{ messages: ChatLine[] }>(`/chat/${role}/${encodeURIComponent(sessionId)}/history`).then(
-    (r) => r.messages,
-  )
-export const sendSellerChat = (sellerId: number, sessionId: string, message: string) =>
-  post<{ reply: string }>('/chat/seller', { seller_id: sellerId, session_id: sessionId, message })
-export const sendBuyerChat = (sessionId: string, message: string) =>
-  post<{ reply: string }>('/chat/buyer', { session_id: sessionId, message })
+export const chatHistory = (role: 'seller' | 'buyer') =>
+  request<{ messages: ChatLine[] }>(`/chat/${role}/history`).then((r) => r.messages)
+export const sendChat = (role: 'seller' | 'buyer', message: string) =>
+  post<{ reply: string }>(`/chat/${role}`, { message })
 
 export interface NewDrop {
-  seller_id: number
   item_name: string
   unit_price: string
   quantity_total: number
@@ -115,7 +118,4 @@ export interface PlacedOrder {
   amount: string
   reserved_until: string
 }
-export const placeOrder = (
-  dropId: number,
-  body: { buyer_name: string; buyer_email: string; chat_session_id: string; quantity: number },
-) => post<PlacedOrder>(`/drops/${dropId}/orders`, body)
+export const placeOrder = (dropId: number, quantity: number) => post<PlacedOrder>(`/drops/${dropId}/orders`, { quantity })

@@ -1,40 +1,23 @@
 import { useCallback, useState, type FormEvent } from 'react'
-import { cancelDrop, createSeller, sellerDrops, type Drop } from '../api'
+import { cancelDrop, createShop, myDrops, type Drop } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { CreateDropDialog } from '../components/CreateDropDialog'
 import { DropCard } from '../components/DropCard'
 import { Modal } from '../components/Modal'
 import { Toast } from '../components/Toast'
+import { useAuth } from '../authContext'
 import { money } from '../format'
 import { usePolling } from '../hooks'
-import { forgetSeller, getSeller, saveSeller, sellerSessionId, type SellerIdentity } from '../identity'
 
 export default function Sell() {
-  const [seller, setSeller] = useState<SellerIdentity | null>(getSeller)
-
-  if (!seller) {
-    return (
-      <Onboarding
-        onDone={(s) => {
-          saveSeller(s)
-          setSeller(s)
-        }}
-      />
-    )
-  }
-  return (
-    <Workspace
-      seller={seller}
-      onSwitch={() => {
-        forgetSeller()
-        setSeller(null)
-      }}
-    />
-  )
+  const { me } = useAuth()
+  // RequireAuth guarantees a signed-in user. They may not have opened a shop yet.
+  return me?.shop ? <Workspace shop={me.shop} /> : <Onboarding />
 }
 
-function Onboarding({ onDone }: { onDone: (s: SellerIdentity) => void }) {
+function Onboarding() {
+  const { me, refresh } = useAuth()
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,7 +28,8 @@ function Onboarding({ onDone }: { onDone: (s: SellerIdentity) => void }) {
     setBusy(true)
     setError(null)
     try {
-      onDone(await createSeller(name.trim()))
+      await createShop(name.trim())
+      await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create your shop.')
       setBusy(false)
@@ -55,15 +39,22 @@ function Onboarding({ onDone }: { onDone: (s: SellerIdentity) => void }) {
   return (
     <main className="narrow">
       <form className="card form form-card" onSubmit={submit}>
-        <h1>Name your shop</h1>
-        <p className="muted">This is how you’ll appear to buyers. You can run as many drops as you like.</p>
+        <h1>Open your shop</h1>
+        <p className="muted">
+          Signed in as <strong>{me?.user?.name}</strong>. Your shop name is what buyers will see.
+        </p>
+        {!me?.user?.paypal_verified && (
+          <p className="note">
+            Your PayPal account isn’t verified yet. You can set up your shop now, but you’ll need a verified account before you can open drops.
+          </p>
+        )}
         <label>
           Shop name
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Maple Street Bakery" maxLength={120} autoFocus />
         </label>
         {error && <p className="error">{error}</p>}
         <button className="button" disabled={!name.trim() || busy}>
-          {busy ? 'Creating…' : 'Start selling'}
+          {busy ? 'Creating…' : 'Open shop'}
         </button>
       </form>
     </main>
@@ -89,8 +80,8 @@ function totals(drops: Drop[]) {
   return { openDrops, approvedUnits, onHold, collected }
 }
 
-function Workspace({ seller, onSwitch }: { seller: SellerIdentity; onSwitch: () => void }) {
-  const { data: drops, error, reload } = usePolling(() => sellerDrops(seller.id))
+function Workspace({ shop }: { shop: { id: number; name: string; verified: boolean } }) {
+  const { data: drops, error, reload } = usePolling(myDrops)
   const [creating, setCreating] = useState(false)
   const [cancelling, setCancelling] = useState<Drop | null>(null)
   const [cancelError, setCancelError] = useState<string | null>(null)
@@ -115,15 +106,24 @@ function Workspace({ seller, onSwitch }: { seller: SellerIdentity; onSwitch: () 
       <main className="wrap main">
         <div className="page-head">
           <div>
-            <h1>{seller.name}</h1>
-            <button className="link-button small" onClick={onSwitch}>
-              Not you? Switch shop
-            </button>
+            <h1>
+              {shop.name}{' '}
+              <span className={`verify ${shop.verified ? 'verify-yes' : 'verify-no'}`}>
+                {shop.verified ? '✓ Verified seller' : 'Not verified'}
+              </span>
+            </h1>
           </div>
-          <button className="button" onClick={() => setCreating(true)}>
+          <button className="button" onClick={() => setCreating(true)} disabled={!shop.verified}>
             + New drop
           </button>
         </div>
+
+        {!shop.verified && (
+          <div className="banner" role="status">
+            <strong>Your PayPal account isn’t verified yet.</strong> To protect buyers, only verified sellers can open drops. Verify your account with PayPal,
+            then sign out and sign back in.
+          </div>
+        )}
 
         <section className="kpis" aria-label="Summary">
           <Kpi label="Open drops" value={String(t.openDrops)} />
@@ -136,7 +136,7 @@ function Workspace({ seller, onSwitch }: { seller: SellerIdentity; onSwitch: () 
         {drops && drops.length === 0 && (
           <div className="empty">
             <p>You haven’t opened a drop yet.</p>
-            <button className="button" onClick={() => setCreating(true)}>
+            <button className="button" onClick={() => setCreating(true)} disabled={!shop.verified}>
               Create your first drop
             </button>
           </div>
@@ -160,17 +160,15 @@ function Workspace({ seller, onSwitch }: { seller: SellerIdentity; onSwitch: () 
 
       <AssistantDock label="Assistant">
         <Chat
-          key={seller.id}
+          key={shop.id}
           role="seller"
-          sellerId={seller.id}
-          sessionId={sellerSessionId(seller.id)}
           intro="I can create drops, check progress, or cancel one. You can also use the New drop button."
           suggestions={['How are my drops doing?', 'Help me set up a new drop']}
           onReply={reload}
         />
       </AssistantDock>
 
-      <CreateDropDialog open={creating} sellerId={seller.id} onClose={() => setCreating(false)} onCreated={() => { reload(); setToast('Drop created. It’s open for orders.') }} />
+      <CreateDropDialog open={creating} onClose={() => setCreating(false)} onCreated={() => { reload(); setToast('Drop created. It’s open for orders.') }} />
 
       <Modal open={cancelling !== null} onClose={() => setCancelling(null)} title="Cancel this drop?">
         <p>
