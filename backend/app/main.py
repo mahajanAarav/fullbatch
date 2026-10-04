@@ -131,7 +131,7 @@ def create_drop(body: DropIn, session: Session = Depends(get_session)):
 @app.get("/drops")
 def list_drops(session: Session = Depends(get_session)):
     """Drops currently taking orders (what a buyer can choose from)."""
-    return {"drops": [drops.drop_summary(session, d) for d in drops.list_open_drops(session)]}
+    return {"drops": [drops.drop_progress(session, d) for d in drops.list_open_drops(session)]}
 
 
 @app.get("/sellers/{seller_id}/drops")

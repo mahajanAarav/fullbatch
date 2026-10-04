@@ -27,13 +27,15 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 # Free-tier quotas are counted PER MODEL (about 20 requests a day each), so when one
-# model runs out we move to the next. Best first. Tested: Gemini accepts a tool
-# exchange that started on one model being continued on another.
+# model runs out we move to the next. Ordered for SPEED first: a chat turn makes two
+# calls, and measured per-call times were ~1s for 3.6-flash and the lite models but
+# 3-7s for 3.8-flash. Tested: Gemini accepts a tool exchange that started on one
+# model being continued on another.
 DEFAULT_MODELS = (
-    "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
     "gemini-3.5-flash",
 )
 RETRY_STATUSES = {429, 500, 502, 503, 504}

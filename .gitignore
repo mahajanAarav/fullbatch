@@ -231,3 +231,6 @@ CLAUDE.local.md
 
 # Local development database
 backend/.devdb/
+
+# Local Claude Code settings
+.claude/
