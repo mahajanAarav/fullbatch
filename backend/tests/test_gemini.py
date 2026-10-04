@@ -12,8 +12,12 @@ from app.llm import LLMError
 TOOLS = [{"name": "get_stock", "description": "d", "parameters": {"type": "object", "properties": {}}}]
 
 
-def client_for(handler, sleeps=None):
-    return GeminiClient("key", transport=httpx.MockTransport(handler), sleep=(sleeps.append if sleeps is not None else lambda s: None))
+def client_for(handler, sleeps=None, models="gemini-test", clock=None):
+    return GeminiClient(
+        "key", models=models, transport=httpx.MockTransport(handler),
+        sleep=(sleeps.append if sleeps is not None else lambda s: None),
+        **({"clock": clock} if clock else {}),
+    )
 
 
 def reply(parts, status=200):
@@ -193,10 +197,105 @@ def test_a_429_waits_as_long_as_google_asks():
     assert out["text"] == "ok" and sleeps == [12.0]
 
 
-def test_an_absurdly_long_retry_delay_is_capped():
+def test_an_hour_long_retry_delay_means_move_on_not_wait():
     quota = httpx.Response(429, json={"error": {"message": "quota", "details": [
         {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "3600s"}]}})
-    answers = [quota, reply([{"text": "ok"}])]
     sleeps = []
-    client_for(lambda r: answers.pop(0), sleeps).generate(system="s", messages=[{"role": "user", "text": "hi"}], tools=[])
-    assert sleeps == [20.0]
+    with pytest.raises(LLMError, match="daily quota"):
+        client_for(lambda r: quota, sleeps).generate(system="s", messages=[{"role": "user", "text": "hi"}], tools=[])
+    assert sleeps == []  # never sat there waiting
+
+
+# ---- model fallback -----------------------------------------------------------
+
+def daily_quota_response(delay="77000s"):
+    return httpx.Response(429, json={"error": {"message": "quota", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+         "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}]}})
+
+
+def model_of(request):
+    return request.url.path.split("/models/")[1].split(":")[0]
+
+
+def test_daily_quota_moves_to_the_next_model_and_remembers():
+    used = []
+
+    def handler(request):
+        used.append(model_of(request))
+        return daily_quota_response() if model_of(request) == "model-a" else reply([{"text": "from b"}])
+
+    now = [0.0]
+    client = client_for(handler, models=["model-a", "model-b"], clock=lambda: now[0])
+    msg = [{"role": "user", "text": "hi"}]
+    assert client.generate(system="s", messages=msg, tools=[])["text"] == "from b"
+    assert client.generate(system="s", messages=msg, tools=[])["text"] == "from b"
+    assert used == ["model-a", "model-b", "model-b"]  # model-a was not wasted on a second request
+
+
+def test_an_exhausted_model_is_tried_again_after_its_reset():
+    state = {"a_works": False}
+    used = []
+
+    def handler(request):
+        used.append(model_of(request))
+        if model_of(request) == "model-a" and not state["a_works"]:
+            return daily_quota_response(delay="100s")
+        return reply([{"text": model_of(request)}])
+
+    now = [0.0]
+    client = client_for(handler, models=["model-a", "model-b"], clock=lambda: now[0])
+    msg = [{"role": "user", "text": "hi"}]
+    assert client.generate(system="s", messages=msg, tools=[])["text"] == "model-b"
+    state["a_works"], now[0] = True, 101.0
+    assert client.generate(system="s", messages=msg, tools=[])["text"] == "model-a"
+
+
+def test_a_removed_model_is_skipped():
+    def handler(request):
+        return httpx.Response(404, text="no longer available") if model_of(request) == "old" else reply([{"text": "new works"}])
+
+    assert client_for(handler, models=["old", "new"]).generate(
+        system="s", messages=[{"role": "user", "text": "hi"}], tools=[])["text"] == "new works"
+
+
+def test_an_overloaded_model_falls_through_after_its_retries():
+    used = []
+
+    def handler(request):
+        used.append(model_of(request))
+        return httpx.Response(503, text="busy") if model_of(request) == "a" else reply([{"text": "b ok"}])
+
+    out = client_for(handler, models=["a", "b"]).generate(system="s", messages=[{"role": "user", "text": "hi"}], tools=[])
+    assert out["text"] == "b ok" and used == ["a", "a", "a", "b"]  # 3 tries on a, then b
+
+
+def test_our_own_bad_request_is_not_hidden_by_falling_back():
+    used = []
+
+    def handler(request):
+        used.append(model_of(request))
+        return httpx.Response(400, json={"error": {"message": "bad body"}})
+
+    with pytest.raises(LLMError, match="bad body"):
+        client_for(handler, models=["a", "b"]).generate(system="s", messages=[{"role": "user", "text": "hi"}], tools=[])
+    assert used == ["a"]
+
+
+def test_when_every_model_fails_the_error_names_each_one():
+    with pytest.raises(LLMError) as err:
+        client_for(lambda r: daily_quota_response(), models=["a", "b"]).generate(
+            system="s", messages=[{"role": "user", "text": "hi"}], tools=[])
+    assert "a: daily quota" in str(err.value) and "b: daily quota" in str(err.value)
+
+
+def test_a_cooling_down_model_is_still_tried_if_all_are_cooling_down():
+    now = [0.0]
+    answers = {"a": daily_quota_response(), "b": daily_quota_response()}
+    client = client_for(lambda r: answers[model_of(r)], models=["a", "b"], clock=lambda: now[0])
+    msg = [{"role": "user", "text": "hi"}]
+    with pytest.raises(LLMError):
+        client.generate(system="s", messages=msg, tools=[])
+    answers["b"] = reply([{"text": "b is back"}])  # recovered earlier than predicted
+    assert client.generate(system="s", messages=msg, tools=[])["text"] == "b is back"

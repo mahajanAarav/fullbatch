@@ -12,6 +12,7 @@ Notes from the real API:
 """
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -22,24 +23,48 @@ from dotenv import load_dotenv
 
 from app.llm import LLMError
 
+log = logging.getLogger(__name__)
+
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-3.5-flash"
+# Free-tier quotas are counted PER MODEL (about 20 requests a day each), so when one
+# model runs out we move to the next. Best first. Tested: Gemini accepts a tool
+# exchange that started on one model being continued on another.
+DEFAULT_MODELS = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+)
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 RETRY_DELAYS = (1.0, 3.0)  # seconds to wait before the 2nd and 3rd attempt
 MAX_RETRY_WAIT = 20.0      # never keep a chatting user waiting longer than this for a retry
+
+
+class _Skip(Exception):
+    """This model cannot answer right now. Try the next one."""
+
+    def __init__(self, reason: str, block_for: float = 0.0):
+        super().__init__(reason)
+        self.reason = reason
+        self.block_for = block_for  # seconds to leave this model alone
 
 
 class GeminiClient:
     def __init__(
         self,
         api_key: str,
-        model: str = DEFAULT_MODEL,
+        models: str | tuple[str, ...] | list[str] = DEFAULT_MODELS,
         transport: httpx.BaseTransport | None = None,
         sleep=time.sleep,
+        clock=time.monotonic,
     ):
         if not api_key:
             raise ValueError("A Gemini API key is required (GEMINI_KEY).")
-        self._model = model
+        self._models = [models] if isinstance(models, str) else list(models)
+        if not self._models:
+            raise ValueError("At least one Gemini model is required.")
+        self._blocked_until: dict[str, float] = {}  # model -> when to try it again
         self._http = httpx.Client(
             base_url=BASE_URL,
             headers={"x-goog-api-key": api_key},  # in a header, never in the URL
@@ -47,6 +72,7 @@ class GeminiClient:
             transport=transport,
         )
         self._sleep = sleep
+        self._clock = clock
 
     # ---- the interface the agent uses ------------------------------------
 
@@ -58,13 +84,26 @@ class GeminiClient:
         if tools:
             declarations = [{**t, "parameters": to_gemini_schema(t["parameters"])} for t in tools]
             body["tools"] = [{"functionDeclarations": declarations}]
-        data = self._post(body)
-        return parse_reply(data)
+
+        now = self._clock()
+        available = [m for m in self._models if self._blocked_until.get(m, 0) <= now]
+        # If every model is cooling down, still try them all rather than refuse to answer.
+        failures: list[str] = []
+        for model in available or self._models:
+            try:
+                return parse_reply(self._post(model, body))
+            except _Skip as skip:
+                failures.append(f"{model}: {skip.reason}")
+                if skip.block_for:
+                    self._blocked_until[model] = self._clock() + skip.block_for
+                log.warning("Gemini model %s skipped (%s); trying the next one", model, skip.reason)
+        raise LLMError("Gemini request failed (" + "; ".join(failures) + ")")
 
     # ---- plumbing ---------------------------------------------------------
 
-    def _post(self, body: dict) -> dict:
-        path = f"/models/{self._model}:generateContent"
+    def _post(self, model: str, body: dict) -> dict:
+        """One model, with short retries for temporary trouble. Raises _Skip to move on."""
+        path = f"/models/{model}:generateContent"
         last = "no response"
         for attempt in range(len(RETRY_DELAYS) + 1):
             wait = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else 0.0
@@ -76,17 +115,32 @@ class GeminiClient:
                 if r.status_code == 200:
                     return r.json()
                 last = f"HTTP {r.status_code}: {_error_message(r)}"
-                if r.status_code not in RETRY_STATUSES:
-                    break
+                if r.status_code == 404:
+                    raise _Skip(last, block_for=3600)  # model removed or not available to us
                 if r.status_code == 429:
-                    # Per-minute quota: when Google says how long to wait, do exactly that.
-                    wait = _retry_after(r) or wait
+                    suggested = _retry_after(r)
+                    if _is_daily_quota(r) or (suggested or 0) > MAX_RETRY_WAIT:
+                        raise _Skip("daily quota used up", block_for=suggested or 3600)
+                    wait = suggested or wait  # per-minute quota: wait exactly as long as Google asks
+                elif r.status_code not in RETRY_STATUSES:
+                    raise LLMError(f"Gemini request failed ({last})")  # our own bad request: do not hide it
             if attempt < len(RETRY_DELAYS):
                 self._sleep(min(wait, MAX_RETRY_WAIT))
-        raise LLMError(f"Gemini request failed ({last})")
+        raise _Skip(last, block_for=60)  # still failing after retries: rest this model briefly
 
     def close(self) -> None:
         self._http.close()
+
+
+def _is_daily_quota(r: httpx.Response) -> bool:
+    try:
+        for detail in r.json()["error"].get("details", []):
+            for violation in detail.get("violations", []):
+                if "PerDay" in violation.get("quotaId", ""):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _retry_after(r: httpx.Response) -> float | None:
@@ -197,5 +251,7 @@ def parse_reply(data: dict) -> dict:
 
 
 def from_env() -> GeminiClient:
+    """GEMINI_KEY is required. GEMINI_MODEL is optional: one model, or a comma-separated fallback list."""
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-    return GeminiClient(os.getenv("GEMINI_KEY", ""), os.getenv("GEMINI_MODEL") or DEFAULT_MODEL)
+    chosen = [m.strip() for m in os.getenv("GEMINI_MODEL", "").split(",") if m.strip()]
+    return GeminiClient(os.getenv("GEMINI_KEY", ""), chosen or DEFAULT_MODELS)
