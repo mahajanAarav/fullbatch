@@ -15,11 +15,13 @@ from sqlalchemy.orm import Session
 from app.paypal import PayPalError
 from app.models import (
     STOCK_HOLDING_STATUSES,
+    ChatMessage,
     Drop,
     DropEvent,
     DropStatus,
     Order,
     OrderStatus,
+    conversation_id,
 )
 
 # PayPal holds last about 29 days, so drops must end well inside that window.
@@ -226,6 +228,36 @@ def _log(session: Session, drop_id: int, kind: str, order_id: int | None = None,
     session.add(DropEvent(drop_id=drop_id, order_id=order_id, kind=kind, detail=detail))
 
 
+def _money(order: Order, currency: str) -> str:
+    return f"${order.amount:,.2f}" if currency == "USD" else f"{order.amount:,.2f} {currency}"
+
+
+def _chat_note(session: Session, order: Order, drop: Drop, kind: str) -> None:
+    """
+    Tell the buyer, in their chat, what just happened to their payment. It is stored with
+    the conversation, so it shows up even if they approved in another tab, and the
+    assistant knows about it too if they ask.
+    """
+    what = f"{_money(order, drop.currency)} for {order.quantity} \u00d7 {drop.item_name}"
+    text = {
+        "authorized": (
+            f"**Payment on hold.** {what} is now on hold with PayPal. You have **not** been charged. "
+            f"You will only be charged if the drop reaches its minimum of {drop.minimum_units} units by the "
+            "deadline. Otherwise the hold is released automatically."
+        ),
+        "captured": f"**Payment complete.** The drop reached its minimum, so {what} was charged. Thank you!",
+        "voided": (
+            f"**Hold released.** The drop did not reach its minimum, so the hold for {what} was released. "
+            "You were not charged."
+        ),
+        "failed": (
+            f"**Payment problem.** We could not complete the payment for {what}. "
+            "Please contact the seller. You have not been charged twice."
+        ),
+    }[kind]
+    session.add(ChatMessage(conversation_id=conversation_id("buyer", order.chat_session_id), role="assistant", text=text))
+
+
 def start_checkout(
     session: Session,
     paypal,
@@ -312,6 +344,7 @@ def confirm_authorization(session: Session, paypal, paypal_order_id: str) -> Ord
     order.paypal_authorization_id = authorization["id"]
     order.authorization_expires_at = _parse_time(authorization.get("expiration_time"))
     _log(session, drop_id, "order_authorized", order_id)
+    _chat_note(session, order, drop, "authorized")
     session.commit()
     return order
 
@@ -388,7 +421,8 @@ def cancel_drop(session: Session, paypal, drop_id: int, now: datetime | None = N
 
 def _process_holds(session: Session, paypal, drop_id: int, now: datetime) -> DropStatus:
     """Capture (filled) or void (failed/cancelled) each remaining hold, one at a time."""
-    status = session.scalar(select(Drop.status).where(Drop.id == drop_id))
+    drop = session.get(Drop, drop_id)
+    status = drop.status
     order_ids = session.scalars(
         select(Order.id)
         .where(Order.drop_id == drop_id, Order.status == OrderStatus.AUTHORIZED)
@@ -410,16 +444,19 @@ def _process_holds(session: Session, paypal, drop_id: int, now: datetime) -> Dro
                     )
                     order.status = OrderStatus.CAPTURED
                     _log(session, drop_id, "order_captured", order.id)
+                    _chat_note(session, order, drop, "captured")
                 else:
                     paypal.void_authorization(
                         order.paypal_authorization_id, request_id=f"void-{order.id}"
                     )
                     order.status = OrderStatus.VOIDED
                     _log(session, drop_id, "order_voided", order.id)
+                    _chat_note(session, order, drop, "voided")
             except PayPalError as err:
                 # One bad hold (e.g. expired) must not stop the rest.
                 order.status = OrderStatus.FAILED
                 _log(session, drop_id, "order_failed", order.id, {"error": str(err)[:200]})
+                _chat_note(session, order, drop, "failed")
             session.commit()
         except Exception:
             session.rollback()

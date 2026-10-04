@@ -217,3 +217,53 @@ def test_cannot_cancel_a_settled_drop(session, make_drop, paypal):
     drops.settle_drop(session, paypal, drop.id, now=after_deadline(drop))
     with pytest.raises(drops.DropNotOpen):
         drops.cancel_drop(session, paypal, drop.id)
+
+
+# ---- chat notes: the buyer is told what happened to their payment -------------
+
+def notes_for(session, chat_session_id):
+    from app.models import ChatMessage, conversation_id
+    return session.scalars(
+        select(ChatMessage.text)
+        .where(ChatMessage.conversation_id == conversation_id("buyer", chat_session_id))
+        .order_by(ChatMessage.id)
+    ).all()
+
+
+def test_hold_adds_a_note_to_the_buyers_chat_once(session, make_drop, paypal):
+    drop = make_drop(minimum_units=5)
+    order = reserve(session, drop, 2, "Ann")
+    drops.start_checkout(session, paypal, order.id, *URLS)
+    drops.confirm_authorization(session, paypal, f"PPO-{order.id}")
+    drops.confirm_authorization(session, paypal, f"PPO-{order.id}")  # duplicate webhook
+    notes = notes_for(session, "chat-Ann")
+    assert len(notes) == 1
+    assert "on hold" in notes[0] and "not** been charged" in notes[0] and "$18.00" in notes[0] and "minimum of 5" in notes[0]
+
+
+def test_notes_go_only_to_the_right_buyer(session, make_drop, paypal):
+    drop = make_drop()
+    authorized(session, paypal, drop, 1, "Ann")
+    assert len(notes_for(session, "chat-Ann")) == 1
+    assert notes_for(session, "chat-Ben") == []
+
+
+def test_settlement_tells_buyers_charged_or_released(session, make_drop, paypal):
+    filled = make_drop(minimum_units=1)
+    authorized(session, paypal, filled, 1, "Ann")
+    drops.settle_drop(session, paypal, filled.id, now=after_deadline(filled))
+    assert "Payment complete" in notes_for(session, "chat-Ann")[-1]
+
+    missed = make_drop(minimum_units=5)
+    authorized(session, paypal, missed, 1, "Ben")
+    drops.settle_drop(session, paypal, missed.id, now=after_deadline(missed))
+    last = notes_for(session, "chat-Ben")[-1]
+    assert "Hold released" in last and "not charged" in last
+
+
+def test_a_failed_capture_tells_the_buyer_there_was_a_problem(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    paypal.fail_capture.add(order.paypal_authorization_id)
+    drops.settle_drop(session, paypal, drop.id, now=after_deadline(drop))
+    assert "Payment problem" in notes_for(session, "chat-Ann")[-1]

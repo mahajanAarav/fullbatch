@@ -158,6 +158,11 @@ class DropEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+def conversation_id(role: str, session_id: str) -> str:
+    """Key of one chat conversation. The role prefix keeps buyer and seller chats apart."""
+    return f"{role}:{session_id}"
+
+
 class ChatMessage(Base):
     """One message in an agent conversation, stored so chats survive restarts."""
 

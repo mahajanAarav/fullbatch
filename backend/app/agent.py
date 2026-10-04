@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app import drops
 from app.config import Settings
 from app.llm import LLM
-from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus
+from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, conversation_id
 from app.paypal import PayPalError
 
 log = logging.getLogger(__name__)
@@ -266,10 +266,6 @@ def system_prompt(role: str, settings: Settings) -> str:
 
 
 # ---- history ---------------------------------------------------------------
-
-def conversation_id(role: str, session_id: str) -> str:
-    return f"{role}:{session_id}"
-
 
 def _to_message(row: ChatMessage) -> dict:
     if row.role == "assistant":
