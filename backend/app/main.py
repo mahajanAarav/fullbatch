@@ -20,10 +20,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import drops
+from app import agent, drops
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.models import Drop, Order, Seller
+from app.llm import LLMError
+from app.models import ChatMessage, Drop, Order, Seller
 from app.paypal import PayPalError, from_env
 
 app = FastAPI(title="fullbatch")
@@ -39,6 +40,14 @@ app.add_middleware(
 def get_paypal():
     """One PayPal client for the whole process, so the access token is reused."""
     return from_env()
+
+
+@lru_cache
+def get_llm():
+    """The language model the agent talks to (Gemini). Imported here so tests need no API key."""
+    from app.gemini import from_env as gemini_from_env
+
+    return gemini_from_env()
 
 
 # ---- turn drop-engine errors into proper HTTP answers ----------------------
@@ -63,6 +72,7 @@ for _exc, _status in [
     (drops.InvalidOrder, 422),
 ]:
     app.add_exception_handler(_exc, _error(_status))
+app.add_exception_handler(LLMError, _error(503))
 
 
 # ---- request bodies --------------------------------------------------------
@@ -90,24 +100,6 @@ class OrderIn(BaseModel):
 
 # ---- helpers ---------------------------------------------------------------
 
-def drop_summary(session: Session, drop: Drop) -> dict:
-    taken = drops.units_taken(session, drop.id)
-    return {
-        "id": drop.id,
-        "seller_id": drop.seller_id,
-        "item_name": drop.item_name,
-        "unit_price": str(drop.unit_price),
-        "currency": drop.currency,
-        "quantity_total": drop.quantity_total,
-        "minimum_units": drop.minimum_units,
-        "max_per_buyer": drop.max_per_buyer,
-        "deadline": drop.deadline.isoformat(),
-        "status": drop.status.value,
-        "units_taken": taken,
-        "units_remaining": drop.quantity_total - taken,
-    }
-
-
 def frontend_order_url(settings: Settings, order_id: int | None, status: str) -> str:
     path = f"/orders/{order_id}" if order_id is not None else "/orders"
     return f"{settings.frontend_url}{path}?status={status}"
@@ -133,7 +125,7 @@ def create_drop(body: DropIn, session: Session = Depends(get_session)):
     if session.get(Seller, body.seller_id) is None:
         raise HTTPException(404, "No seller with that id.")
     drop = drops.create_drop(session, **body.model_dump())
-    return drop_summary(session, drop)
+    return drops.drop_summary(session, drop)
 
 
 @app.get("/drops/{drop_id}")
@@ -141,7 +133,7 @@ def get_drop(drop_id: int, session: Session = Depends(get_session)):
     drop = session.get(Drop, drop_id)
     if drop is None:
         raise drops.DropNotFound(f"No drop with id {drop_id}.")
-    return drop_summary(session, drop)
+    return drops.drop_summary(session, drop)
 
 
 @app.post("/drops/{drop_id}/cancel")
@@ -161,21 +153,19 @@ def place_order(
     settings: Settings = Depends(get_settings),
 ):
     """Reserve stock, then start PayPal checkout. The buyer approves at approval_url."""
-    order = drops.reserve_stock(
-        session, drop_id, body.buyer_name, body.buyer_email, body.chat_session_id, body.quantity
-    )
     try:
-        approval_url = drops.start_checkout(
+        order, approval_url = drops.place_order(
             session,
             paypal,
-            order.id,
+            drop_id,
+            body.buyer_name,
+            body.buyer_email,
+            body.chat_session_id,
+            body.quantity,
             return_url=f"{settings.public_api_url}/paypal/return",
             cancel_url=f"{settings.public_api_url}/paypal/cancel",
         )
     except PayPalError:
-        # Do not leave the stock locked up for 15 minutes because PayPal failed.
-        session.rollback()
-        drops.release_reservation(session, order.id, reason="checkout_failed")
         raise HTTPException(502, "Could not start PayPal checkout. Please try again.")
     return {
         "order_id": order.id,
@@ -279,3 +269,59 @@ async def paypal_webhook(
     return await run_in_threadpool(
         _handle_webhook, session, paypal, settings, request.headers, raw_body
     )
+
+
+# ---- chat ------------------------------------------------------------------
+
+class ChatIn(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class SellerChatIn(ChatIn):
+    seller_id: int
+
+
+@app.post("/chat/seller")
+def chat_seller(
+    body: SellerChatIn,
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+    llm=Depends(get_llm),
+    settings: Settings = Depends(get_settings),
+):
+    if session.get(Seller, body.seller_id) is None:
+        raise HTTPException(404, "No seller with that id.")
+    reply = agent.run_turn(
+        session, llm, paypal, settings, "seller", body.session_id, body.message, seller_id=body.seller_id
+    )
+    return {"reply": reply}
+
+
+@app.post("/chat/buyer")
+def chat_buyer(
+    body: ChatIn,
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+    llm=Depends(get_llm),
+    settings: Settings = Depends(get_settings),
+):
+    reply = agent.run_turn(session, llm, paypal, settings, "buyer", body.session_id, body.message)
+    return {"reply": reply}
+
+
+@app.get("/chat/{role}/{session_id}/history")
+def chat_history(role: str, session_id: str, session: Session = Depends(get_session)):
+    """What the chat window shows after a reload: only the visible user and assistant text."""
+    if role not in agent.TOOLS_BY_ROLE:
+        raise HTTPException(404, "Unknown chat role.")
+    rows = session.scalars(
+        select(ChatMessage)
+        .where(
+            ChatMessage.conversation_id == agent.conversation_id(role, session_id),
+            ChatMessage.role.in_(("user", "assistant")),
+            ChatMessage.text.is_not(None),
+        )
+        .order_by(ChatMessage.id)
+    ).all()
+    return {"messages": [{"role": r.role, "text": r.text} for r in rows]}

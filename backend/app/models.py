@@ -24,6 +24,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -154,4 +155,21 @@ class DropEvent(Base):
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"))
     kind: Mapped[str] = mapped_column(String(40))  # e.g. "order_reserved", "drop_filled"
     detail: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatMessage(Base):
+    """One message in an agent conversation, stored so chats survive restarts."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_messages_conversation", "conversation_id", "id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # "<role>:<session id>", so a buyer can never read a seller conversation by guessing ids.
+    conversation_id: Mapped[str] = mapped_column(String(80))
+    role: Mapped[str] = mapped_column(String(12))  # "user", "assistant" or "tool"
+    text: Mapped[str | None] = mapped_column(Text)
+    tool_calls: Mapped[list | None] = mapped_column(JSON)  # assistant: [{id, name, args}]
+    call_id: Mapped[str | None] = mapped_column(String(80))  # tool: which call this answers
+    tool_name: Mapped[str | None] = mapped_column(String(60))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

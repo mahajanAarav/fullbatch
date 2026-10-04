@@ -41,7 +41,7 @@ def session_factory(engine):
     """Gives each test empty tables. Tests that need many sessions use this directly."""
     with engine.begin() as conn:
         conn.execute(
-            text("TRUNCATE drop_events, orders, drops, sellers RESTART IDENTITY CASCADE")
+            text("TRUNCATE chat_messages, drop_events, orders, drops, sellers RESTART IDENTITY CASCADE")
         )
     return sessionmaker(engine, expire_on_commit=False)
 

@@ -47,3 +47,29 @@ class FakePayPal:
 
     def verify_webhook_signature(self, *, headers, event, webhook_id):
         return self.webhook_valid
+
+
+class ScriptedLLM:
+    """
+    A fake language model that plays back replies in order, and records what it was sent.
+    Each step is either a string (a text reply) or a list of (tool_name, args) tool requests.
+    """
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+        self.calls: list[dict] = []  # every generate() call: system, messages, tools
+
+    def generate(self, *, system, messages, tools):
+        self.calls.append({"system": system, "messages": list(messages), "tools": tools})
+        if not self.steps:
+            raise AssertionError("ScriptedLLM ran out of steps")
+        step = self.steps.pop(0)
+        if isinstance(step, str):
+            return {"text": step, "tool_calls": []}
+        return {
+            "text": None,
+            "tool_calls": [
+                {"id": f"call-{len(self.calls)}-{i}", "name": name, "args": args}
+                for i, (name, args) in enumerate(step)
+            ],
+        }

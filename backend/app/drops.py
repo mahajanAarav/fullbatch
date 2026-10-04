@@ -483,3 +483,48 @@ def run_deadline_job(session_factory, paypal, now: datetime | None = None) -> di
                 session.rollback()
                 summary["errors"].append({"drop_id": drop_id, "error": str(err)[:200]})
     return summary
+
+
+def drop_summary(session: Session, drop: Drop) -> dict:
+    """A drop as plain data, with live stock numbers. Shared by the API and the agent."""
+    taken = units_taken(session, drop.id)
+    return {
+        "id": drop.id,
+        "seller_id": drop.seller_id,
+        "item_name": drop.item_name,
+        "unit_price": str(drop.unit_price),
+        "currency": drop.currency,
+        "quantity_total": drop.quantity_total,
+        "minimum_units": drop.minimum_units,
+        "max_per_buyer": drop.max_per_buyer,
+        "deadline": drop.deadline.isoformat(),
+        "status": drop.status.value,
+        "units_taken": taken,
+        "units_remaining": drop.quantity_total - taken,
+    }
+
+
+def place_order(
+    session: Session,
+    paypal,
+    drop_id: int,
+    buyer_name: str,
+    buyer_email: str,
+    chat_session_id: str,
+    quantity: int,
+    return_url: str,
+    cancel_url: str,
+) -> tuple[Order, str]:
+    """
+    Reserve stock and start PayPal checkout. Returns (order, approval_link).
+    If PayPal fails, the reservation is released at once instead of holding
+    the stock for 15 minutes, and the PayPalError is re-raised.
+    """
+    order = reserve_stock(session, drop_id, buyer_name, buyer_email, chat_session_id, quantity)
+    try:
+        link = start_checkout(session, paypal, order.id, return_url, cancel_url)
+    except PayPalError:
+        session.rollback()
+        release_reservation(session, order.id, reason="checkout_failed")
+        raise
+    return order, link
