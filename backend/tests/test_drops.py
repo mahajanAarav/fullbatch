@@ -183,3 +183,107 @@ def test_a_shop_with_no_owner_is_not_verified(session, make_drop):
 def test_unknown_seller_is_refused(make_drop):
     with pytest.raises(drops.InvalidDrop, match="Unknown seller"):
         make_drop(seller_id=9999)
+
+
+# ---- location, pickup and delivery ---------------------------------------------------------------
+
+def test_every_drop_needs_an_address_and_a_way_to_receive_it(session, seller, make_drop):
+    with pytest.raises(drops.InvalidDrop, match="address"):
+        make_drop(pickup_address=None, pickup_lat=None, pickup_lng=None)
+    with pytest.raises(drops.InvalidDrop, match="address"):
+        make_drop(pickup_address="   ")
+    with pytest.raises(drops.InvalidDrop, match="pickup, delivery, or both"):
+        make_drop(offers_pickup=False, offers_delivery=False)
+    with pytest.raises(drops.InvalidDrop, match="300 characters"):
+        make_drop(pickup_notes="x" * 301)
+
+
+def test_delivery_needs_a_sensible_radius_and_fee(session, seller, make_drop):
+    for radius in (None, 0, -1, 51):
+        with pytest.raises(drops.InvalidDrop, match="delivery distance"):
+            make_drop(offers_delivery=True, delivery_radius_km=radius)
+    for fee in (Decimal("-1"), Decimal("50.01")):
+        with pytest.raises(drops.InvalidDrop, match="delivery fee"):
+            make_drop(offers_delivery=True, delivery_radius_km=5, delivery_fee=fee)
+    ok = make_drop(offers_delivery=True, delivery_radius_km=5, delivery_fee=Decimal("4.50"))
+    assert ok.offers_delivery and ok.delivery_radius_km == 5 and ok.delivery_fee == Decimal("4.50")
+
+
+def test_a_pickup_only_drop_ignores_stray_delivery_settings(session, seller, make_drop):
+    d = make_drop(offers_delivery=False, delivery_radius_km=9, delivery_fee=Decimal("5"))
+    assert d.delivery_radius_km is None and d.delivery_fee == Decimal("0")
+
+
+def test_a_delivery_only_drop_is_allowed_and_refuses_pickup_orders(session, seller, make_drop):
+    d = make_drop(offers_pickup=False, offers_delivery=True, delivery_radius_km=5)
+    with pytest.raises(drops.InvalidOrder, match="delivery only"):
+        drops.reserve_stock(session, d.id, "A", "a@x.co", "c", 1)
+
+
+def order_delivery(session, drop, lat, lng, address="10 Some St", qty=2):
+    return drops.reserve_stock(session, drop.id, "A", "a@x.co", "c", qty, fulfillment="delivery",
+                               delivery_address=address, delivery_lat=lat, delivery_lng=lng)
+
+
+def test_delivery_inside_the_radius_adds_the_fee_to_what_paypal_holds(session, seller, make_drop):
+    d = make_drop(offers_delivery=True, delivery_radius_km=5, delivery_fee=Decimal("3.00"))
+    o = order_delivery(session, d, 40.7580, -73.9855)            # about 1 km away
+    assert o.fulfillment == "delivery" and o.delivery_fee == Decimal("3.00") and o.amount == Decimal("21.00")
+    assert o.delivery_address == "10 Some St"
+    pickup = drops.reserve_stock(session, d.id, "B", "b@x.co", "c2", 2)
+    assert pickup.fulfillment == "pickup" and pickup.amount == Decimal("18.00") and pickup.delivery_address is None
+
+
+def test_delivery_outside_the_radius_is_refused_with_a_clear_distance(session, seller, make_drop):
+    d = make_drop(offers_delivery=True, delivery_radius_km=5)
+    with pytest.raises(drops.InvalidOrder, match=r"miles away.*within 3\.1 miles"):
+        order_delivery(session, d, 41.15, -73.9857)               # about 45 km away
+    assert drops.units_taken(session, d.id) == 0                  # nothing was reserved
+
+
+def test_the_radius_edge_is_inclusive_and_just_past_it_is_not(session, seller, make_drop):
+    from app.geo import haversine_km
+
+    d = make_drop(offers_delivery=True, delivery_radius_km=2.0)
+    # find a point just inside and just outside 2 km due north of the shop
+    deg = 2.0 / 111.19
+    inside = order_delivery(session, d, d.pickup_lat + deg * 0.98, d.pickup_lng)
+    assert haversine_km(d.pickup_lat, d.pickup_lng, inside.delivery_lat, inside.delivery_lng) <= 2.0
+    with pytest.raises(drops.InvalidOrder):
+        order_delivery(session, d, d.pickup_lat + deg * 1.05, d.pickup_lng)
+
+
+def test_delivery_is_refused_when_not_offered_or_without_an_address(session, seller, make_drop):
+    pickup_only = make_drop()
+    with pytest.raises(drops.InvalidOrder, match="doesn't offer delivery"):
+        order_delivery(session, pickup_only, 40.7484, -73.9857)
+    d = make_drop(offers_delivery=True, delivery_radius_km=5)
+    for addr, lat, lng in ((None, 40.75, -73.98), ("  ", 40.75, -73.98), ("10 St", None, None)):
+        with pytest.raises(drops.InvalidOrder, match="address to deliver to"):
+            drops.reserve_stock(session, d.id, "A", "a@x.co", "c", 1, fulfillment="delivery",
+                                delivery_address=addr, delivery_lat=lat, delivery_lng=lng)
+    with pytest.raises(drops.InvalidOrder, match="pickup or delivery"):
+        drops.reserve_stock(session, d.id, "A", "a@x.co", "c", 1, fulfillment="teleport")
+
+
+def test_public_drop_data_has_the_area_but_never_the_exact_address_or_notes(session, seller, make_drop):
+    d = make_drop(pickup_notes="Ring the side bell", offers_delivery=True, delivery_radius_km=5, delivery_fee=Decimal("2"))
+    shown = drops.drop_summary(session, d)
+    assert shown["area"] == "Koreatown, New York" and shown["offers_pickup"] and shown["offers_delivery"]
+    assert (shown["lat"], shown["lng"]) == (40.75, -73.99)          # rounded to about a kilometre
+    assert "350 5th" not in str(shown) and "side bell" not in str(shown) and "pickup_address" not in shown
+
+
+def test_the_hold_confirmation_tells_the_buyer_where_to_collect_or_where_it_is_going(session, seller, make_drop):
+    from tests.test_settlement import notes_for
+    from tests.fakes import FakePayPal
+
+    pp = FakePayPal()
+    d = make_drop(pickup_notes="Ring the side bell", offers_delivery=True, delivery_radius_km=5)
+    pick = drops.reserve_stock(session, d.id, "A", "a@x.co", "chat-pick", 1)
+    deliv = order_delivery(session, d, 40.7580, -73.9855)
+    for o in (pick, deliv):
+        drops.start_checkout(session, pp, o.id, "r", "c")
+        drops.confirm_authorization(session, pp, f"PPO-{o.id}")
+    assert "Pickup address: 350 5th Ave, New York, NY. Ring the side bell" in notes_for(session, "chat-pick")[0]
+    assert "delivered to 10 Some St" in notes_for(session, "c")[0]

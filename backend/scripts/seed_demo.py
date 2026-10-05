@@ -25,13 +25,13 @@ DEMO_EMAIL = "demo@example.com"
 NOW = datetime.now(timezone.utc)
 rng = random.Random(7)  # fixed seed: the same demo data every time
 
-# (item, price, total, minimum, status, created_days_ago, deadline_days_from_now, [(order status, how many orders)])
+# (item, price, total, minimum, status, created_days_ago, deadline_days_from_now, [(order status, how many orders)], delivers?)
 DROPS = [
-    ("Sourdough loaves", "9.00", 24, 10, DropStatus.FILLED, 13, -9, [(OrderStatus.CAPTURED, 14)]),
-    ("Cinnamon rolls (box of 4)", "5.50", 30, 20, DropStatus.FAILED, 9, -5, [(OrderStatus.VOIDED, 8)]),
-    ("Blueberry scones", "4.50", 16, 8, DropStatus.FILLED, 7, -3, [(OrderStatus.CAPTURED, 11)]),
-    ("Rye & caraway loaves", "10.50", 20, 12, DropStatus.OPEN, 4, 2, [(OrderStatus.AUTHORIZED, 9), (OrderStatus.RESERVED, 2)]),
-    ("Lemon tarts", "6.00", 12, 6, DropStatus.OPEN, 1, 5, [(OrderStatus.AUTHORIZED, 3), (OrderStatus.RESERVED, 1)]),
+    ("Sourdough loaves", "9.00", 24, 10, DropStatus.FILLED, 13, -9, [(OrderStatus.CAPTURED, 14)], True),
+    ("Cinnamon rolls (box of 4)", "5.50", 30, 20, DropStatus.FAILED, 9, -5, [(OrderStatus.VOIDED, 8)], False),
+    ("Blueberry scones", "4.50", 16, 8, DropStatus.FILLED, 7, -3, [(OrderStatus.CAPTURED, 11)], False),
+    ("Rye & caraway loaves", "10.50", 20, 12, DropStatus.OPEN, 4, 2, [(OrderStatus.AUTHORIZED, 9), (OrderStatus.RESERVED, 2)], True),
+    ("Lemon tarts", "6.00", 12, 6, DropStatus.OPEN, 1, 5, [(OrderStatus.AUTHORIZED, 3), (OrderStatus.RESERVED, 1)], False),
 ]
 FIRST = ["Alex", "Sam", "Jordan", "Riley", "Casey", "Morgan", "Taylor", "Quinn", "Avery", "Jamie"]
 
@@ -54,13 +54,18 @@ def main() -> None:
             s.add(shop)
             s.commit()
 
-        for item, price, total, minimum, status, made, closes, orders in DROPS:
+        for item, price, total, minimum, status, made, closes, orders, delivery in DROPS:
             created = NOW - timedelta(days=made)
             deadline = NOW + timedelta(days=closes)
             drop = Drop(
                 seller_id=shop.id, item_name=item, unit_price=Decimal(price), quantity_total=total,
                 minimum_units=minimum, max_per_buyer=4, deadline=deadline, status=status,
                 created_at=created, settled_at=deadline if status != DropStatus.OPEN else None,
+                offers_pickup=True, offers_delivery=delivery, delivery_radius_km=6.0 if delivery else None,
+                delivery_fee=Decimal("3.00") if delivery else Decimal("0"),
+                pickup_address="281 7th Ave, Brooklyn, NY 11215", pickup_area="Park Slope, New York",
+                pickup_notes="Ring the bell marked Bakehouse. Pickup is on the porch.",
+                pickup_lat=40.6717, pickup_lng=-73.9806,
             )
             s.add(drop)
             s.flush()

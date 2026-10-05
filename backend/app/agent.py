@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import drops, planner
+from app import drops, geo, planner
 from app.config import Settings
 from app.llm import LLM
 from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, User, conversation_id
@@ -48,6 +48,7 @@ class ToolContext:
     chat_session_id: str
     seller_id: int | None = None  # set for seller conversations only
     user: User | None = None  # the signed-in person, set by the server (never by the model)
+    geocoder: Any = None  # looks up addresses; set by the server
 
 
 @dataclass(frozen=True)
@@ -103,9 +104,15 @@ class CreateDropArgs(BaseModel):
     minimum_units: int = Field(gt=0, description="Units that must be ordered or the drop is cancelled and nobody is charged")
     deadline: str = Field(description="When ordering closes, ISO 8601 like 2026-10-10T17:00. Times without a timezone are in the seller's timezone.")
     max_per_buyer: int = Field(default=4, gt=0, description="Most units one buyer can order")
+    pickup_address: str = Field(description="The street address buyers collect from (and deliveries start from), with city and ZIP")
+    pickup_notes: str = Field(default="", description="Optional note for buyers after they approve, e.g. 'Ring the side bell'")
+    offers_delivery: bool = Field(default=False, description="True if the seller also delivers")
+    delivery_radius_miles: float = Field(default=0, ge=0, description="How far the seller delivers, in miles (needed if offers_delivery)")
+    delivery_fee: float = Field(default=0, ge=0, description="Flat delivery fee in US dollars (0 for free delivery)")
 
 
 def create_drop(ctx: ToolContext, a: CreateDropArgs) -> dict:
+    place = drops.locate(ctx.geocoder, a.pickup_address)
     drop = drops.create_drop(
         ctx.session,
         seller_id=ctx.seller_id,
@@ -115,6 +122,15 @@ def create_drop(ctx: ToolContext, a: CreateDropArgs) -> dict:
         minimum_units=a.minimum_units,
         deadline=_parse_deadline(a.deadline, ctx.settings.timezone),
         max_per_buyer=a.max_per_buyer,
+        offers_pickup=True,
+        offers_delivery=a.offers_delivery,
+        pickup_address=a.pickup_address,
+        pickup_area=place.area,
+        pickup_notes=a.pickup_notes or None,
+        pickup_lat=place.lat,
+        pickup_lng=place.lng,
+        delivery_radius_km=(a.delivery_radius_miles * geo.KM_PER_MILE) if a.offers_delivery else None,
+        delivery_fee=Decimal(str(a.delivery_fee)).quantize(Decimal("0.01")),
     )
     return drops.drop_summary(ctx.session, drop)
 
@@ -188,11 +204,19 @@ def check_stock(ctx: ToolContext, a: DropIdArgs) -> dict:
 class PlaceOrderArgs(BaseModel):
     drop_id: int
     quantity: int = Field(gt=0)
+    fulfillment: str = Field(default="pickup", description="'pickup' or 'delivery'. Delivery only if the drop offers it.")
+    delivery_address: str = Field(default="", description="The address to deliver to, with city and ZIP. Needed for delivery.")
 
 
 def place_order(ctx: ToolContext, a: PlaceOrderArgs) -> dict:
     if not ctx.user.email_verified:
         return {"error": "The buyer needs to verify their email first. They can do that from the Reserve button or the banner on the site."}
+    delivery = {}
+    if a.fulfillment == "delivery":
+        if not a.delivery_address.strip():
+            return {"error": "Ask the buyer for the address to deliver to."}
+        place = drops.locate(ctx.geocoder, a.delivery_address)
+        delivery = {"delivery_address": a.delivery_address, "delivery_lat": place.lat, "delivery_lng": place.lng}
     # Who is buying comes from the signed-in account, never from anything the model supplies.
     order, link = drops.place_order(
         ctx.session,
@@ -205,12 +229,15 @@ def place_order(ctx: ToolContext, a: PlaceOrderArgs) -> dict:
         return_url=f"{ctx.settings.public_api_url}/paypal/return",
         cancel_url=f"{ctx.settings.public_api_url}/paypal/cancel",
         buyer_user_id=ctx.user.id,
+        fulfillment=a.fulfillment,
+        **delivery,
     )
     return {
         "order_id": order.id,
         "amount": str(order.amount),
         "approval_url": link,
         "reserved_until": order.reserved_until.isoformat(),
+        "fulfillment": order.fulfillment,
         "note": "Stock is reserved. The buyer must open approval_url to approve. PayPal only holds the amount; they are charged only if the drop reaches its minimum.",
     }
 
@@ -275,7 +302,8 @@ def system_prompt(role: str, settings: Settings) -> str:
         return (
             f"You are the fullbatch assistant helping a small seller (home baker, market vendor) run preorder drops. "
             f"Now: {now}.\n{how_it_works}\n"
-            "To create a drop you need: item, price, quantity, minimum units and deadline. Ask for anything missing, "
+            "To create a drop you need: item, price, quantity, minimum units, deadline, and the pickup address (where buyers "
+            "collect it). Also ask whether the seller delivers, and if so how far (in miles) and the fee. Ask for anything missing, "
             "then confirm the details back before creating it. When the seller asks how a drop went, or what to run "
             "next, call plan_next_drop, explain the result and the reasons in plain language, say how confident it is, and "
             "offer to create the drop. Never invent figures that the tool did not return, and never create the drop until "
@@ -286,7 +314,8 @@ def system_prompt(role: str, settings: Settings) -> str:
     return (
         f"You are the fullbatch assistant helping a buyer order from preorder drops. Now: {now}.\n{how_it_works}\n"
         "Help the buyer pick a drop and quantity (they are already signed in, so never ask for their name or "
-        "email), confirm the order and total, then call place_order and give them the approval link. Explain that approving only places a hold and "
+        "email), ask whether they want pickup or delivery when the drop offers both (for delivery, ask for their address "
+        "and mention the fee), confirm the order and total, then call place_order and give them the approval link. Explain that approving only places a hold and "
         "that they pay only if the drop reaches its minimum. They have 15 minutes to approve before the "
         "reservation is released.\n" + rules
     )
@@ -387,11 +416,12 @@ def run_turn(
     user_text: str,
     seller_id: int | None = None,
     user: User | None = None,
+    geocoder=None,
 ) -> str:
     """Handle one user message. Returns the assistant's reply text."""
     tools = {t.name: t for t in TOOLS_BY_ROLE[role]}
     specs = [t.spec() for t in tools.values()]
-    ctx = ToolContext(session, paypal, settings, chat_session_id=session_id, seller_id=seller_id, user=user)
+    ctx = ToolContext(session, paypal, settings, chat_session_id=session_id, seller_id=seller_id, user=user, geocoder=geocoder)
     conv_id = conversation_id(role, session_id)
 
     messages = load_history(session, conv_id)

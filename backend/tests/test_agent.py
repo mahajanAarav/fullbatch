@@ -1,6 +1,7 @@
 """The chat agent, driven by a scripted fake model and the real database."""
 
 import json
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -11,11 +12,11 @@ from sqlalchemy import select
 from app import agent, drops
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.deps import get_llm, get_paypal
+from app.deps import get_geocoder, get_llm, get_paypal
 from app.llm import LLMError
 from app.main import app
 from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, Seller
-from tests.fakes import FakePayPal, ScriptedLLM, sign_in
+from tests.fakes import FakeGeocoder, FakePayPal, ScriptedLLM, sign_in
 
 SETTINGS = Settings(public_api_url="http://api.test", frontend_url="http://app.test", timezone="America/New_York", dev_login=True)
 
@@ -26,7 +27,7 @@ def paypal():
 
 
 def turn(session, llm, paypal, role, text, session_id="s1", seller_id=None, user=None):
-    return agent.run_turn(session, llm, paypal, SETTINGS, role, session_id, text, seller_id=seller_id, user=user)
+    return agent.run_turn(session, llm, paypal, SETTINGS, role, session_id, text, seller_id=seller_id, user=user, geocoder=FakeGeocoder())
 
 
 def tool_results(llm, call_index):
@@ -72,7 +73,7 @@ def test_tool_schemas_are_clean(session):
 # ---- seller flows ----------------------------------------------------------
 
 def test_seller_creates_a_drop(session, seller, paypal):
-    args = dict(item_name="Sourdough", unit_price=9, quantity_total=10, minimum_units=5, deadline=future())
+    args = dict(item_name="Sourdough", unit_price=9, quantity_total=10, minimum_units=5, deadline=future(), pickup_address="350 5th Ave, New York")
     llm = ScriptedLLM([("create_drop", args)], "Your drop is live!")
     reply = turn(session, llm, paypal, "seller", "make a drop", seller_id=seller.id)
     assert reply == "Your drop is live!"
@@ -84,7 +85,7 @@ def test_seller_creates_a_drop(session, seller, paypal):
 
 def test_naive_deadline_is_read_in_the_configured_timezone(session, seller, paypal):
     naive = (datetime.now() + timedelta(days=2)).replace(microsecond=0, tzinfo=None).isoformat()
-    args = dict(item_name="Pie", unit_price=5, quantity_total=4, minimum_units=2, deadline=naive)
+    args = dict(item_name="Pie", unit_price=5, quantity_total=4, minimum_units=2, deadline=naive, pickup_address="350 5th Ave, New York")
     turn(session, ScriptedLLM([("create_drop", args)], "done"), paypal, "seller", "go", seller_id=seller.id)
     drop = session.scalars(select(Drop)).one()
     assert drop.deadline.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None).isoformat() == naive
@@ -100,7 +101,7 @@ def test_bad_tool_input_comes_back_as_a_readable_error(session, seller, paypal):
 def test_an_unverified_seller_is_refused_through_the_agent_too(session, seller_user, seller, paypal):
     seller_user.paypal_verified = False
     session.commit()
-    args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=2, deadline=future())
+    args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=2, deadline=future(), pickup_address="350 5th Ave, New York")
     llm = ScriptedLLM([("create_drop", args)], "Sorry")
     turn(session, llm, paypal, "seller", "go", seller_id=seller.id)
     assert "isn't verified" in tool_results(llm, 1)[0]["error"]
@@ -108,7 +109,7 @@ def test_an_unverified_seller_is_refused_through_the_agent_too(session, seller_u
 
 
 def test_engine_rules_still_apply_through_the_agent(session, seller, paypal):
-    args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=9, deadline=future())
+    args = dict(item_name="x", unit_price=5, quantity_total=4, minimum_units=9, deadline=future(), pickup_address="350 5th Ave, New York")
     llm = ScriptedLLM([("create_drop", args)], "no")
     turn(session, llm, paypal, "seller", "go", seller_id=seller.id)
     assert "minimum" in tool_results(llm, 1)[0]["error"]
@@ -215,7 +216,9 @@ def test_the_model_cannot_choose_who_is_buying(session, make_drop, paypal, buyer
 
 def test_place_order_tool_does_not_ask_for_personal_details(session):
     spec = next(t for t in agent.BUYER_TOOLS if t.name == "place_order").spec()
-    assert set(spec["parameters"]["properties"]) == {"drop_id", "quantity"}
+    props = set(spec["parameters"]["properties"])
+    assert props == {"drop_id", "quantity", "fulfillment", "delivery_address"}   # how to receive it, never who is buying
+    assert not props & {"buyer_name", "buyer_email", "chat_session_id", "buyer_user_id"}
 
 
 def test_sold_out_is_explained_not_raised(session, make_drop, paypal, buyer):
@@ -326,6 +329,7 @@ def make_client(session_factory, paypal):
     app.dependency_overrides[get_paypal] = lambda: paypal
     app.dependency_overrides[get_llm] = lambda: holder["llm"]
     app.dependency_overrides[get_settings] = lambda: SETTINGS
+    app.dependency_overrides[get_geocoder] = lambda: FakeGeocoder()
 
     def build():
         c = TestClient(app, follow_redirects=False)
@@ -398,3 +402,56 @@ def test_model_outage_is_a_503(make_client):
     sign_in(c)
     c.holder["llm"] = Down()
     assert c.post("/chat/buyer", json={"message": "hello"}).status_code == 503
+
+
+# ---- pickup and delivery through the assistant -------------------------------------------
+
+def delivery_drop(make_drop, **kw):
+    return make_drop(offers_delivery=True, delivery_radius_km=8.0, delivery_fee=Decimal("3.00"), pickup_notes="Ring the side bell", **kw)
+
+
+def test_seller_creates_a_drop_with_a_pickup_address_and_delivery(session, seller, paypal):
+    args = dict(item_name="Pie", unit_price=20, quantity_total=8, minimum_units=4, deadline=future(),
+                pickup_address="350 5th Ave, New York", pickup_notes="Ring the side bell",
+                offers_delivery=True, delivery_radius_miles=5, delivery_fee=3)
+    turn(session, ScriptedLLM([("create_drop", args)], "done"), paypal, "seller", "go", seller_id=seller.id)
+    drop = session.scalars(select(Drop)).one()
+    assert drop.pickup_area == "Koreatown, New York" and drop.pickup_notes == "Ring the side bell"
+    assert drop.offers_pickup and drop.offers_delivery and round(drop.delivery_radius_km, 2) == 8.05 and drop.delivery_fee == Decimal("3.00")
+
+
+def test_the_assistant_explains_an_address_that_cannot_be_found(session, seller, paypal):
+    args = dict(item_name="Pie", unit_price=20, quantity_total=8, minimum_units=4, deadline=future(), pickup_address="nowhere at all")
+    llm = ScriptedLLM([("create_drop", args)], "sorry")
+    turn(session, llm, paypal, "seller", "go", seller_id=seller.id)
+    assert "couldn't find that address" in tool_results(llm, 1)[0]["error"] and session.scalars(select(Drop)).all() == []
+
+
+def test_a_buyer_can_order_delivery_through_the_assistant(session, make_drop, paypal, buyer):
+    drop = delivery_drop(make_drop)
+    args = dict(drop_id=drop.id, quantity=2, fulfillment="delivery", delivery_address="10 near street")
+    llm = ScriptedLLM([("place_order", args)], "ordered")
+    turn(session, llm, paypal, "buyer", "deliver please", user=buyer)
+    order = session.scalars(select(Order)).one()
+    assert order.fulfillment == "delivery" and order.delivery_address == "10 near street" and order.delivery_fee == Decimal("3.00")
+    assert order.amount == Decimal("21.00")                                   # 2 x 9.00 + 3.00 delivery
+    assert tool_results(llm, 1)[0]["amount"] == "21.00"
+
+
+def test_the_assistant_refuses_delivery_outside_the_radius_and_without_an_address(session, make_drop, paypal, buyer):
+    drop = delivery_drop(make_drop)
+    far = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=1, fulfillment="delivery", delivery_address="far away"))], "no")
+    turn(session, far, paypal, "buyer", "deliver", user=buyer)
+    assert "miles away" in tool_results(far, 1)[0]["error"] and session.scalars(select(Order)).all() == []
+
+    blank = ScriptedLLM([("place_order", dict(drop_id=drop.id, quantity=1, fulfillment="delivery"))], "no")
+    turn(session, blank, paypal, "buyer", "deliver", session_id="s2", user=buyer)
+    assert "address" in tool_results(blank, 1)[-1]["error"]
+
+
+def test_the_assistant_never_reveals_the_exact_address(session, make_drop, paypal, buyer):
+    make_drop(pickup_notes="Ring the side bell")
+    llm = ScriptedLLM([("list_open_drops", {})], "here")
+    turn(session, llm, paypal, "buyer", "what is open", user=buyer)
+    shown = json.dumps(tool_results(llm, 1)[0])
+    assert "Koreatown" in shown and "350 5th" not in shown and "side bell" not in shown

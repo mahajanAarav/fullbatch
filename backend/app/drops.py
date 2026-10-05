@@ -12,6 +12,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import geo
 from app.paypal import PayPalError
 from app.models import (
     STOCK_HOLDING_STATUSES,
@@ -29,6 +30,8 @@ from app.models import (
 MAX_DROP_DAYS = 14
 # How long an unapproved order keeps its stock before it is released.
 RESERVATION_MINUTES = 15
+MAX_DELIVERY_KM = 50.0   # about 31 miles: a home baker's van, not a courier network
+MAX_DELIVERY_FEE = Decimal("50")
 
 
 class DropError(Exception):
@@ -52,6 +55,14 @@ class InvalidOrder(DropError):
 
 
 class SellerNotVerified(DropError):
+    pass
+
+
+class AddressNotFound(DropError):
+    pass
+
+
+class LookupUnavailable(DropError):
     pass
 
 
@@ -80,6 +91,19 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def locate(geocoder, address: str) -> geo.Place:
+    """Turn an address the caller typed into a place, with errors a person can act on."""
+    if geocoder is None:
+        raise LookupUnavailable("Address lookup isn't available right now.")
+    try:
+        place = geocoder.lookup(address)
+    except geo.GeocodeError:
+        raise LookupUnavailable("We couldn't look up that address just now. Please try again in a moment.")
+    if place is None:
+        raise AddressNotFound("We couldn't find that address. Check the street, city and ZIP code.")
+    return place
+
+
 def create_drop(
     session: Session,
     seller_id: int,
@@ -90,8 +114,18 @@ def create_drop(
     deadline: datetime,
     max_per_buyer: int = 4,
     now: datetime | None = None,
+    *,
+    offers_pickup: bool = True,
+    offers_delivery: bool = False,
+    pickup_address: str | None = None,
+    pickup_area: str | None = None,
+    pickup_notes: str | None = None,
+    pickup_lat: float | None = None,
+    pickup_lng: float | None = None,
+    delivery_radius_km: float | None = None,
+    delivery_fee: Decimal = Decimal("0"),
 ) -> Drop:
-    """Validate and insert a new open drop."""
+    """Validate and insert a new open drop. Its location must already be resolved (see locate)."""
     now = now or _now()
 
     # Only shops whose owner has a PayPal-verified account may open drops. The rule lives here so
@@ -118,7 +152,31 @@ def create_drop(
     if deadline > now + timedelta(days=MAX_DROP_DAYS):
         raise InvalidDrop(f"Drops can run at most {MAX_DROP_DAYS} days.")
 
+    # Where, and how buyers receive it. Every drop has a location, because that is how buyers find it.
+    if not (offers_pickup or offers_delivery):
+        raise InvalidDrop("Offer pickup, delivery, or both.")
+    if not (pickup_address and pickup_address.strip()) or pickup_lat is None or pickup_lng is None:
+        raise InvalidDrop("Add the address buyers will collect from (or that deliveries start from).")
+    if len(pickup_address) > 300 or (pickup_notes and len(pickup_notes) > 300):
+        raise InvalidDrop("The address and pickup notes can each be up to 300 characters.")
+    if offers_delivery:
+        if delivery_radius_km is None or not 0 < delivery_radius_km <= MAX_DELIVERY_KM:
+            raise InvalidDrop(f"Set a delivery distance of up to {MAX_DELIVERY_KM / geo.KM_PER_MILE:.0f} miles.")
+        if not 0 <= delivery_fee <= MAX_DELIVERY_FEE:
+            raise InvalidDrop(f"The delivery fee can be $0 to ${MAX_DELIVERY_FEE}.")
+    else:
+        delivery_radius_km, delivery_fee = None, Decimal("0")
+
     drop = Drop(
+        offers_pickup=offers_pickup,
+        offers_delivery=offers_delivery,
+        pickup_address=pickup_address.strip(),
+        pickup_area=(pickup_area or "").strip() or None,
+        pickup_notes=(pickup_notes or "").strip() or None,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        delivery_radius_km=delivery_radius_km,
+        delivery_fee=delivery_fee,
         seller_id=seller_id,
         item_name=item_name.strip(),
         unit_price=unit_price,
@@ -155,6 +213,11 @@ def reserve_stock(
     quantity: int,
     now: datetime | None = None,
     buyer_user_id: int | None = None,
+    *,
+    fulfillment: str = "pickup",
+    delivery_address: str | None = None,
+    delivery_lat: float | None = None,
+    delivery_lng: float | None = None,
 ) -> Order:
     """
     Reserve units for a buyer, safely under concurrency.
@@ -185,14 +248,38 @@ def reserve_stock(
         if quantity > remaining:
             raise SoldOut(remaining)
 
+        fee = Decimal("0")
+        if fulfillment == "pickup":
+            if not drop.offers_pickup:
+                raise InvalidOrder("This drop is delivery only.")
+        elif fulfillment == "delivery":
+            if not drop.offers_delivery:
+                raise InvalidOrder("This drop doesn't offer delivery. Choose pickup instead.")
+            if not (delivery_address and delivery_address.strip()) or delivery_lat is None or delivery_lng is None:
+                raise InvalidOrder("Add the address to deliver to.")
+            away = geo.haversine_km(drop.pickup_lat, drop.pickup_lng, delivery_lat, delivery_lng)
+            if away > drop.delivery_radius_km:
+                raise InvalidOrder(
+                    f"That address is {away / geo.KM_PER_MILE:.1f} miles away. "
+                    f"This seller delivers within {drop.delivery_radius_km / geo.KM_PER_MILE:.1f} miles."
+                )
+            fee = drop.delivery_fee
+        else:
+            raise InvalidOrder("Choose pickup or delivery.")
+
         order = Order(
+            fulfillment=fulfillment,
+            delivery_address=delivery_address.strip()[:300] if fulfillment == "delivery" else None,
+            delivery_lat=delivery_lat if fulfillment == "delivery" else None,
+            delivery_lng=delivery_lng if fulfillment == "delivery" else None,
+            delivery_fee=fee,
             drop_id=drop_id,
             buyer_name=buyer_name,
             buyer_email=buyer_email,
             buyer_user_id=buyer_user_id,
             chat_session_id=chat_session_id,
             quantity=quantity,
-            amount=drop.unit_price * quantity,
+            amount=drop.unit_price * quantity + fee,
             status=OrderStatus.RESERVED,
             reserved_until=now + timedelta(minutes=RESERVATION_MINUTES),
         )
@@ -257,11 +344,16 @@ def _chat_note(session: Session, order: Order, drop: Drop, kind: str) -> None:
     assistant knows about it too if they ask.
     """
     what = f"{_money(order, drop.currency)} for {order.quantity} \u00d7 {drop.item_name}"
+    if order.fulfillment == "delivery":
+        where = f" It will be delivered to {order.delivery_address}."
+    else:
+        notes = f" {drop.pickup_notes}" if drop.pickup_notes else ""
+        where = f" Pickup address: {drop.pickup_address}.{notes}" if drop.pickup_address else ""
     text = {
         "authorized": (
             f"**Payment on hold.** {what} is now on hold with PayPal. You have **not** been charged. "
             f"You will only be charged if the drop reaches its minimum of {drop.minimum_units} units by the "
-            "deadline. Otherwise the hold is released automatically."
+            f"deadline. Otherwise the hold is released automatically.{where}"
         ),
         "captured": f"**Payment complete.** The drop reached its minimum, so {what} was charged. Thank you!",
         "voided": (
@@ -547,6 +639,15 @@ def drop_summary(session: Session, drop: Drop) -> dict:
         "id": drop.id,
         "seller_id": drop.seller_id,
         "shop_name": drop.seller.name,
+        # Where it is, publicly: a neighborhood and rounded coordinates. The exact address and the
+        # pickup notes are shared only after a buyer's hold is approved.
+        "offers_pickup": drop.offers_pickup,
+        "offers_delivery": drop.offers_delivery,
+        "area": drop.pickup_area,
+        "lat": None if drop.pickup_lat is None else geo.public_coord(drop.pickup_lat),
+        "lng": None if drop.pickup_lng is None else geo.public_coord(drop.pickup_lng),
+        "delivery_radius_km": drop.delivery_radius_km,
+        "delivery_fee": str(drop.delivery_fee),
         "item_name": drop.item_name,
         "unit_price": str(drop.unit_price),
         "currency": drop.currency,
@@ -571,6 +672,11 @@ def place_order(
     return_url: str,
     cancel_url: str,
     buyer_user_id: int | None = None,
+    *,
+    fulfillment: str = "pickup",
+    delivery_address: str | None = None,
+    delivery_lat: float | None = None,
+    delivery_lng: float | None = None,
 ) -> tuple[Order, str]:
     """
     Reserve stock and start PayPal checkout. Returns (order, approval_link).
@@ -578,7 +684,8 @@ def place_order(
     the stock for 15 minutes, and the PayPalError is re-raised.
     """
     order = reserve_stock(
-        session, drop_id, buyer_name, buyer_email, chat_session_id, quantity, buyer_user_id=buyer_user_id
+        session, drop_id, buyer_name, buyer_email, chat_session_id, quantity, buyer_user_id=buyer_user_id,
+        fulfillment=fulfillment, delivery_address=delivery_address, delivery_lat=delivery_lat, delivery_lng=delivery_lng,
     )
     try:
         link = start_checkout(session, paypal, order.id, return_url, cancel_url)

@@ -89,6 +89,10 @@ def make_drop(session, seller):
             quantity_total=10,
             minimum_units=5,
             deadline=datetime.now(timezone.utc) + timedelta(days=3),
+            pickup_address="350 5th Ave, New York, NY",
+            pickup_area="Koreatown, New York",
+            pickup_lat=40.7484,
+            pickup_lng=-73.9857,
         )
         args.update(overrides)
         return drops.create_drop(session, **args)

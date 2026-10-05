@@ -116,3 +116,29 @@ class FakeMailer:
         import re
 
         return re.search(r"\b(\d{6})\b", self.sent[-1]["body"]).group(1)
+
+
+class FakeGeocoder:
+    """
+    Address lookups without the network. Put a word in the address to steer the answer:
+    "nowhere" is not found, "down" simulates the service being down, "far" is ~30 miles from the
+    shop, "near" is ~1 mile away. Anything else is the shop's own address.
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def lookup(self, query):
+        from app.geo import GeocodeError, Place
+
+        self.calls.append(query)
+        q = query.lower()
+        if "nowhere" in q:
+            return None
+        if "down" in q:
+            raise GeocodeError("simulated outage")
+        if "far" in q:
+            return Place(41.15, -73.9857, "Faraway, New York", "A far away address")
+        if "near" in q:
+            return Place(40.7580, -73.9855, "Midtown, New York", "A nearby address")
+        return Place(40.7484, -73.9857, "Koreatown, New York", "350 5th Avenue, New York, NY")

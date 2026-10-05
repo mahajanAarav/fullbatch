@@ -37,3 +37,12 @@ def get_mailer():
     from app.mailer import from_settings
 
     return from_settings(get_settings())
+
+
+@lru_cache
+def get_geocoder():
+    """The address lookup service (OpenStreetMap Nominatim). Tests replace it with a fake."""
+    from app.config import get_settings
+    from app.geo import NominatimGeocoder
+
+    return NominatimGeocoder(countries=get_settings().geo_countries)

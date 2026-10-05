@@ -14,6 +14,7 @@ name a different seller or buyer.
 
 import json
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,14 +24,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import agent, auth, drops, planner, studio_ai
+from app import agent, auth, drops, geo, planner, studio_ai
 from app.auth import buyer_chat_id, require_shop, require_user, require_verified_email
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.deps import get_llm, get_paypal
+from app.deps import get_geocoder, get_llm, get_paypal
 from app.llm import LLMError
 from app.models import ChatMessage, Drop, Order, Seller, User
 from app.paypal import PayPalError
+from app.ratelimit import RateLimiter
 
 app = FastAPI(title="fullbatch")
 app.add_middleware(
@@ -64,6 +66,8 @@ for _exc, _status in [
     (drops.OrderNotPayable, 409),
     (drops.DropNotDue, 409),
     (drops.InvalidDrop, 422),
+    (drops.AddressNotFound, 422),
+    (drops.LookupUnavailable, 503),
     (drops.InvalidOrder, 422),
 ]:
     app.add_exception_handler(_exc, _error(_status))
@@ -83,10 +87,23 @@ class DropIn(BaseModel):
     minimum_units: int = Field(gt=0)
     deadline: AwareDatetime  # must include a timezone, so "5pm" is never ambiguous
     max_per_buyer: int = Field(default=4, gt=0)
+    # Where, and how buyers receive it. The address is looked up on the server.
+    pickup_address: str = Field(min_length=3, max_length=300)
+    pickup_notes: str | None = Field(default=None, max_length=300)
+    offers_pickup: bool = True
+    offers_delivery: bool = False
+    delivery_radius_miles: float | None = Field(default=None, gt=0, le=31)
+    delivery_fee: Decimal = Field(default=Decimal("0"), ge=0, le=50, max_digits=6, decimal_places=2)
 
 
 class OrderIn(BaseModel):
     quantity: int
+    fulfillment: Literal["pickup", "delivery"] = "pickup"
+    delivery_address: str | None = Field(default=None, max_length=300)
+
+
+class GeocodeIn(BaseModel):
+    query: str = Field(min_length=3, max_length=300)
 
 
 class ChatIn(BaseModel):
@@ -108,10 +125,21 @@ def my_drop(session: Session, shop: Seller, drop_id: int) -> Drop:
     return drop
 
 
+# The exact address and notes are shared only once the buyer's hold is approved (or the order is complete).
+APPROVED = ("authorized", "captured")
+
+
 def order_view(session: Session, order: Order) -> dict:
     drop = session.get(Drop, order.drop_id)
     progress = drops.drop_progress(session, drop)
+    approved = order.status.value in APPROVED
     return {
+        "fulfillment": order.fulfillment,
+        "delivery_fee": str(order.delivery_fee),
+        "area": drop.pickup_area,
+        "pickup_address": drop.pickup_address if approved and order.fulfillment == "pickup" else None,
+        "pickup_notes": drop.pickup_notes if approved and order.fulfillment == "pickup" else None,
+        "delivery_address": order.delivery_address,  # the buyer's own address, only ever shown back to them
         "id": order.id,
         "status": order.status.value,
         "quantity": order.quantity,
@@ -162,10 +190,38 @@ def create_shop(body: ShopIn, user: User = Depends(require_verified_email), sess
 
 
 @app.post("/drops", status_code=201)
-def create_drop(body: DropIn, shop: Seller = Depends(require_shop), session: Session = Depends(get_session)):
+def create_drop(
+    body: DropIn,
+    shop: Seller = Depends(require_shop),
+    session: Session = Depends(get_session),
+    geocoder=Depends(get_geocoder),
+):
     # create_drop refuses shops whose owner is not PayPal-verified (SellerNotVerified -> 403).
-    drop = drops.create_drop(session, seller_id=shop.id, **body.model_dump())
+    place = drops.locate(geocoder, body.pickup_address)
+    fields = body.model_dump(exclude={"pickup_address", "delivery_radius_miles"})
+    drop = drops.create_drop(
+        session,
+        seller_id=shop.id,
+        pickup_address=body.pickup_address,
+        pickup_area=place.area,
+        pickup_lat=place.lat,
+        pickup_lng=place.lng,
+        delivery_radius_km=None if body.delivery_radius_miles is None else body.delivery_radius_miles * geo.KM_PER_MILE,
+        **fields,
+    )
     return drops.drop_summary(session, drop)
+
+
+geocode_limiter = RateLimiter(limit=30, window=600)  # address checks per seller per 10 minutes
+
+
+@app.post("/geo/check")
+def check_address(body: GeocodeIn, user: User = Depends(require_user), geocoder=Depends(get_geocoder)):
+    """Lets a seller confirm that an address was understood, before they post a drop with it."""
+    if not geocode_limiter.allow(user.id):
+        raise HTTPException(429, "That's a lot of address checks. Please wait a few minutes.")
+    place = drops.locate(geocoder, body.query)
+    return {"area": place.area, "label": place.label}
 
 
 @app.get("/me/drops")
@@ -240,6 +296,36 @@ def my_plan(
     return {"recommendation": planner.recommend(reports, settings.timezone), "reports": reports}
 
 
+@app.get("/me/drops/{drop_id}/orders")
+def my_drop_orders(drop_id: int, shop: Seller = Depends(require_shop), session: Session = Depends(get_session)):
+    """
+    The orders on one of the seller's drops that they now need to fulfil. Buyers appear by first name
+    and last initial, and a delivery address is included only for orders whose hold is approved.
+    """
+    drop = my_drop(session, shop, drop_id)
+    rows = session.scalars(select(Order).where(Order.drop_id == drop.id).order_by(Order.id)).all()
+
+    def display(name: str) -> str:
+        parts = name.split()
+        return parts[0] if len(parts) < 2 else f"{parts[0]} {parts[-1][0]}."
+
+    return {
+        "orders": [
+            {
+                "order_id": o.id,
+                "buyer": display(o.buyer_name),
+                "quantity": o.quantity,
+                "status": o.status.value,
+                "fulfillment": o.fulfillment,
+                "delivery_address": o.delivery_address if o.status.value in APPROVED else None,
+                "amount": str(o.amount),
+            }
+            for o in rows
+            if o.status.value in APPROVED  # approved orders to fulfil; not abandoned reservations or released holds
+        ]
+    }
+
+
 @app.post("/drops/{drop_id}/cancel")
 def cancel_drop(
     drop_id: int,
@@ -262,8 +348,15 @@ def place_order(
     session: Session = Depends(get_session),
     paypal=Depends(get_paypal),
     settings: Settings = Depends(get_settings),
+    geocoder=Depends(get_geocoder),
 ):
     """Reserve stock for the signed-in buyer, then start PayPal checkout. They approve at approval_url."""
+    delivery = {}
+    if body.fulfillment == "delivery":
+        if not (body.delivery_address and body.delivery_address.strip()):
+            raise drops.InvalidOrder("Add the address to deliver to.")
+        place = drops.locate(geocoder, body.delivery_address)
+        delivery = {"delivery_address": body.delivery_address, "delivery_lat": place.lat, "delivery_lng": place.lng}
     try:
         order, approval_url = drops.place_order(
             session,
@@ -276,6 +369,8 @@ def place_order(
             return_url=f"{settings.public_api_url}/paypal/return",
             cancel_url=f"{settings.public_api_url}/paypal/cancel",
             buyer_user_id=user.id,
+            fulfillment=body.fulfillment,
+            **delivery,
         )
     except PayPalError:
         raise HTTPException(502, "Could not start PayPal checkout. Please try again.")
@@ -393,9 +488,11 @@ def chat_seller(
     paypal=Depends(get_paypal),
     llm=Depends(get_llm),
     settings: Settings = Depends(get_settings),
+    geocoder=Depends(get_geocoder),
 ):
     reply = agent.run_turn(
-        session, llm, paypal, settings, "seller", f"shop-{shop.id}", body.message, seller_id=shop.id, user=user
+        session, llm, paypal, settings, "seller", f"shop-{shop.id}", body.message,
+        seller_id=shop.id, user=user, geocoder=geocoder,
     )
     return {"reply": reply}
 
@@ -408,8 +505,11 @@ def chat_buyer(
     paypal=Depends(get_paypal),
     llm=Depends(get_llm),
     settings: Settings = Depends(get_settings),
+    geocoder=Depends(get_geocoder),
 ):
-    reply = agent.run_turn(session, llm, paypal, settings, "buyer", buyer_chat_id(user), body.message, user=user)
+    reply = agent.run_turn(
+        session, llm, paypal, settings, "buyer", buyer_chat_id(user), body.message, user=user, geocoder=geocoder
+    )
     return {"reply": reply}
 
 

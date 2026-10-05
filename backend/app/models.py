@@ -18,6 +18,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     CheckConstraint,
+    Float,
     DateTime,
     Enum,
     ForeignKey,
@@ -143,6 +144,9 @@ class Drop(Base):
         CheckConstraint("minimum_units > 0", name="drop_minimum_positive"),
         CheckConstraint("minimum_units <= quantity_total", name="drop_minimum_within_quantity"),
         CheckConstraint("max_per_buyer > 0", name="drop_max_per_buyer_positive"),
+        CheckConstraint("offers_pickup OR offers_delivery", name="drop_offers_a_way_to_receive"),
+        CheckConstraint("delivery_fee >= 0", name="drop_delivery_fee_not_negative"),
+        CheckConstraint("delivery_radius_km IS NULL OR delivery_radius_km > 0", name="drop_delivery_radius_positive"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -154,6 +158,16 @@ class Drop(Base):
     # The minimum is counted in units, not buyers: the seller's costs depend on units.
     minimum_units: Mapped[int] = mapped_column(Integer)
     max_per_buyer: Mapped[int] = mapped_column(Integer, default=4)
+    # ---- where, and how buyers receive it ----
+    offers_pickup: Mapped[bool] = mapped_column(Boolean, default=True)
+    offers_delivery: Mapped[bool] = mapped_column(Boolean, default=False)
+    pickup_area: Mapped[str | None] = mapped_column(String(120))     # public: "Park Slope, New York"
+    pickup_address: Mapped[str | None] = mapped_column(String(300))  # PRIVATE until a buyer's hold is approved
+    pickup_notes: Mapped[str | None] = mapped_column(String(300))    # PRIVATE until a buyer's hold is approved
+    pickup_lat: Mapped[float | None] = mapped_column(Float)          # exact; only ever shown rounded to ~1 km
+    pickup_lng: Mapped[float | None] = mapped_column(Float)
+    delivery_radius_km: Mapped[float | None] = mapped_column(Float)  # measured from the pickup point
+    delivery_fee: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[DropStatus] = mapped_column(_enum(DropStatus), default=DropStatus.OPEN)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -183,7 +197,12 @@ class Order(Base):
     chat_session_id: Mapped[str] = mapped_column(String(64), index=True)
 
     quantity: Mapped[int] = mapped_column(Integer)
-    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))  # quantity x unit price, fixed at order time
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))  # quantity x unit price (+ delivery fee), fixed at order time
+    fulfillment: Mapped[str] = mapped_column(String(10), default="pickup")  # "pickup" or "delivery"
+    delivery_address: Mapped[str | None] = mapped_column(String(300))  # shown to the seller only once the hold is approved
+    delivery_lat: Mapped[float | None] = mapped_column(Float)
+    delivery_lng: Mapped[float | None] = mapped_column(Float)
+    delivery_fee: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
 
     status: Mapped[OrderStatus] = mapped_column(_enum(OrderStatus), default=OrderStatus.RESERVED)
     # An unapproved reservation lets go of its stock after this time.

@@ -28,6 +28,8 @@ class Settings:
     smtp_user: str = ""
     smtp_password: str = ""
     email_from: str = ""
+    # Address lookups are limited to these countries (comma-separated ISO codes), so a bare ZIP means a US ZIP.
+    geo_countries: str = "us"
 
     @property
     def cookie_secure(self) -> bool:
@@ -49,4 +51,5 @@ def get_settings() -> Settings:
         smtp_user=os.getenv("SMTP_USER", ""),
         smtp_password=os.getenv("SMTP_PASSWORD", ""),
         email_from=os.getenv("EMAIL_FROM", ""),
+        geo_countries=os.getenv("GEO_COUNTRIES", "us") or "us",
     )

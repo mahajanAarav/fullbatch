@@ -9,10 +9,10 @@ from sqlalchemy import select
 from app import drops
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.deps import get_paypal
+from app.deps import get_geocoder, get_paypal
 from app.main import app
 from app.models import Order
-from tests.fakes import FakePayPal, sign_in
+from tests.fakes import FakeGeocoder, FakePayPal, sign_in
 
 SETTINGS = Settings(
     public_api_url="http://api.test",
@@ -38,6 +38,7 @@ def make_client(session_factory, paypal):
     app.dependency_overrides[get_session] = _session
     app.dependency_overrides[get_paypal] = lambda: paypal
     app.dependency_overrides[get_settings] = lambda: SETTINGS
+    app.dependency_overrides[get_geocoder] = lambda: FakeGeocoder()
     yield lambda: TestClient(app, follow_redirects=False)
     app.dependency_overrides.clear()
 
@@ -61,7 +62,8 @@ def buyer_client(make_client, email="sam@example.com", name="Sam Lee"):
 
 
 def drop_body(**overrides):
-    body = dict(item_name="Sourdough", unit_price="9.00", quantity_total=10, minimum_units=5, deadline=iso(timedelta(days=3)))
+    body = dict(item_name="Sourdough", unit_price="9.00", quantity_total=10, minimum_units=5, deadline=iso(timedelta(days=3)),
+                pickup_address="350 5th Ave, New York, NY")
     body.update(overrides)
     return body
 
@@ -461,3 +463,151 @@ def test_drops_carry_the_shops_name_so_buyers_know_who_is_selling(make_client):
     make_drop(seller_client(make_client))
     drop = make_client().get("/drops").json()["drops"][0]
     assert drop["shop_name"] == "Bea's Bakery"
+
+
+# ---- location: pickup and delivery -------------------------------------------------------------
+
+def located(**extra):
+    return dict(pickup_address="350 5th Ave, New York, NY", pickup_notes="Ring the side bell", **extra)
+
+
+def delivery_drop_body(**extra):
+    return located(offers_delivery=True, delivery_radius_miles=5, delivery_fee="3.00", **extra)
+
+
+def test_creating_a_drop_looks_up_the_address_and_keeps_it_private(make_client):
+    seller = seller_client(make_client)
+    r = seller.post("/drops", json=drop_body(**located()))
+    assert r.status_code == 201
+    drop = r.json()
+    assert drop["area"] == "Koreatown, New York" and (drop["lat"], drop["lng"]) == (40.75, -73.99)
+    public = make_client()
+    for url in ("/drops", f"/drops/{drop['id']}"):
+        shown = public.get(url).text
+        assert "350 5th" not in shown and "side bell" not in shown and "pickup_address" not in shown
+
+
+def test_the_delivery_distance_is_given_in_miles_and_stored_in_kilometres(make_client):
+    drop = seller_client(make_client).post("/drops", json=drop_body(**delivery_drop_body())).json()
+    assert drop["offers_delivery"] is True and drop["delivery_fee"] == "3.00"
+    assert drop["delivery_radius_km"] == pytest.approx(8.05, abs=0.01)
+
+
+def test_bad_addresses_and_bad_delivery_settings_are_clear_errors(make_client):
+    seller = seller_client(make_client)
+    nowhere = seller.post("/drops", json=drop_body(pickup_address="nowhere at all"))
+    assert nowhere.status_code == 422 and "couldn't find that address" in nowhere.json()["error"]
+    down = seller.post("/drops", json=drop_body(pickup_address="down down down"))
+    assert down.status_code == 503 and "try again" in down.json()["error"]
+    body = drop_body()
+    del body["pickup_address"]
+    assert seller.post("/drops", json=body).status_code == 422                                  # an address is required
+    assert seller.post("/drops", json=drop_body(**located(offers_delivery=True))).status_code == 422   # radius missing
+    assert seller.post("/drops", json=drop_body(**located(offers_delivery=True, delivery_radius_miles=99))).status_code == 422
+    assert seller.post("/drops", json=drop_body(**located(offers_delivery=True, delivery_radius_miles=3, delivery_fee="75"))).status_code == 422
+    assert seller.post("/drops", json=drop_body(**located(offers_pickup=False))).status_code == 422   # no way to receive it
+
+
+def test_sellers_can_check_an_address_before_posting(make_client):
+    seller = seller_client(make_client)
+    ok = seller.post("/geo/check", json={"query": "350 5th Ave, New York"})
+    assert ok.status_code == 200 and ok.json()["area"] == "Koreatown, New York"
+    assert seller.post("/geo/check", json={"query": "nowhere"}).status_code == 422
+    assert make_client().post("/geo/check", json={"query": "350 5th Ave"}).status_code == 401
+
+
+def test_address_checks_are_rate_limited(make_client, monkeypatch):
+    from app import main
+    from app.ratelimit import RateLimiter
+
+    monkeypatch.setattr(main, "geocode_limiter", RateLimiter(limit=2, window=600))
+    seller = seller_client(make_client)
+    assert [seller.post("/geo/check", json={"query": "350 5th Ave"}).status_code for _ in range(3)] == [200, 200, 429]
+
+
+def order(buyer, drop_id, **body):
+    return buyer.post(f"/drops/{drop_id}/orders", json={"quantity": 2, **body})
+
+
+def test_delivery_orders_are_priced_with_the_fee_and_checked_against_the_radius(make_client, session_factory):
+    seller, buyer = seller_client(make_client), buyer_client(make_client)
+    drop = seller.post("/drops", json=drop_body(**delivery_drop_body())).json()
+
+    inside = order(buyer, drop["id"], fulfillment="delivery", delivery_address="12 near road")
+    assert inside.status_code == 201 and inside.json()["amount"] == "21.00"                 # 2 x 9 + 3 fee
+    outside = order(buyer, drop["id"], fulfillment="delivery", delivery_address="500 far away road")
+    assert outside.status_code == 422 and "miles away" in outside.json()["error"]
+    assert order(buyer, drop["id"], fulfillment="delivery").status_code == 422               # no address
+    assert order(buyer, drop["id"], fulfillment="delivery", delivery_address="nowhere").status_code == 422
+    assert order(buyer, drop["id"], fulfillment="delivery", delivery_address="down").status_code == 503
+    pickup = order(buyer, drop["id"])                                                         # pickup is the default
+    assert pickup.json()["amount"] == "18.00"
+    with session_factory() as s:
+        assert [(o.fulfillment, o.delivery_fee) for o in s.scalars(select(Order).order_by(Order.id))][0][0] == "delivery"
+
+
+def test_delivery_is_refused_on_a_pickup_only_drop(make_client):
+    drop = make_drop(seller_client(make_client)).json()
+    r = order(buyer_client(make_client), drop["id"], fulfillment="delivery", delivery_address="12 near road")
+    assert r.status_code == 422 and "doesn't offer delivery" in r.json()["error"]
+
+
+def test_the_exact_address_is_revealed_only_after_the_hold_is_approved_and_only_to_that_buyer(make_client):
+    seller = seller_client(make_client)
+    drop = seller.post("/drops", json=drop_body(**located())).json()
+    ann, ben = buyer_client(make_client, "ann@example.com", "Ann"), buyer_client(make_client, "ben@example.com", "Ben")
+    placed = order(ann, drop["id"]).json()
+
+    before = ann.get(f"/orders/{placed['order_id']}").json()                        # reserved, not yet approved
+    assert before["status"] == "reserved" and before["area"] == "Koreatown, New York"
+    assert before["pickup_address"] is None and before["pickup_notes"] is None
+    assert "350 5th" not in str(before)
+
+    ann.get("/paypal/return", params={"token": f"PPO-{placed['order_id']}"})        # the buyer approves on PayPal
+    after = ann.get(f"/orders/{placed['order_id']}").json()
+    assert after["status"] == "authorized"
+    assert after["pickup_address"] == "350 5th Ave, New York, NY" and after["pickup_notes"] == "Ring the side bell"
+
+    assert ben.get(f"/orders/{placed['order_id']}").status_code == 404              # someone else's order
+    assert "350 5th" not in str(ann.get("/me/orders").json()["orders"][0]) or after["pickup_address"]   # (the list is the buyer's own)
+
+
+def test_a_released_hold_takes_the_address_back_away(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    drop = seller.post("/drops", json=drop_body(minimum_units=5, **located())).json()
+    buyer = buyer_client(make_client)
+    order_id = paid_order(buyer, drop["id"], 1)
+    assert buyer.get(f"/orders/{order_id}").json()["pickup_address"]
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))   # minimum missed
+    gone = buyer.get(f"/orders/{order_id}").json()
+    assert gone["status"] == "voided" and gone["pickup_address"] is None
+
+
+def test_sellers_see_who_to_hand_orders_to_only_for_approved_orders(make_client):
+    seller = seller_client(make_client)
+    drop = seller.post("/drops", json=drop_body(**delivery_drop_body())).json()
+    ann = buyer_client(make_client, "ann@example.com", "Ann Marie Baker")
+    ben = buyer_client(make_client, "ben@example.com", "Ben")
+    paid = order(ann, drop["id"], fulfillment="delivery", delivery_address="12 near road").json()
+    ann.get("/paypal/return", params={"token": f"PPO-{paid['order_id']}"})
+    order(ben, drop["id"])                                                                   # reserved only
+
+    rows = seller.get(f"/me/drops/{drop['id']}/orders").json()["orders"]
+    assert len(rows) == 1                                                                    # the unapproved reservation is hidden
+    assert rows[0]["buyer"] == "Ann B." and rows[0]["fulfillment"] == "delivery"
+    assert rows[0]["delivery_address"] == "12 near road" and rows[0]["quantity"] == 2
+    assert "ann@example.com" not in str(rows) and "Marie" not in str(rows)                   # no email, no full name
+
+
+def test_only_the_owner_sees_a_drops_fulfillment_list(make_client):
+    owner, rival = seller_client(make_client, email="o@example.com"), seller_client(make_client, email="r@example.com")
+    drop = owner.post("/drops", json=drop_body(**located())).json()
+    assert rival.get(f"/me/drops/{drop['id']}/orders").status_code == 404
+    assert buyer_client(make_client).get(f"/me/drops/{drop['id']}/orders").status_code == 403
+    assert make_client().get(f"/me/drops/{drop['id']}/orders").status_code == 401
+
+
+def test_analytics_never_carries_an_address(make_client):
+    seller = seller_client(make_client)
+    seller.post("/drops", json=drop_body(**located()))
+    assert "350 5th" not in seller.get("/me/analytics").text
