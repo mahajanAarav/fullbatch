@@ -12,6 +12,8 @@ class FakePayPal:
         self.crash_on_capture: str | None = None  # raise a non-PayPal error once, to simulate a crash
         self.on_authorize = None                  # optional callback to simulate a race
         self.fail_create = False                  # make checkout creation fail
+        self.reauthorized: list[tuple[str, str]] = []   # (old id, new id)
+        self.fail_reauthorize = False
         self.webhook_valid = True                 # what signature verification answers
         self.login_profile = {                    # who "PayPal" says just signed in
             "payer_id": "PAYER-1", "email": "sam@example.com", "email_verified": True,
@@ -39,13 +41,22 @@ class FakePayPal:
 
     def capture_authorization(self, authorization_id, *, request_id=None):
         self.request_ids.append(request_id)
-        if authorization_id == self.crash_on_capture:
+        original = authorization_id.removesuffix("-R")  # a re-authorized hold is still the same buyer's hold
+        if original == self.crash_on_capture:
             self.crash_on_capture = None
             raise RuntimeError("simulated crash")
-        if authorization_id in self.fail_capture:
+        if original in self.fail_capture:
             raise PayPalError("capture authorization", 422, "AUTHORIZATION_EXPIRED")
         self.captured.append(authorization_id)
-        return {"status": "COMPLETED"}
+        return {"id": f"CAP-{authorization_id}", "status": "COMPLETED"}
+
+    def reauthorize_authorization(self, authorization_id, *, request_id=None):
+        self.request_ids.append(request_id)
+        if self.fail_reauthorize:
+            raise PayPalError("reauthorize authorization", 422, "REAUTHORIZATION_NOT_ALLOWED")
+        new_id = f"{authorization_id}-R"
+        self.reauthorized.append((authorization_id, new_id))
+        return {"id": new_id, "status": "CREATED", "expiration_time": "2026-11-20T00:00:00Z"}
 
     def void_authorization(self, authorization_id, *, request_id=None):
         self.request_ids.append(request_id)

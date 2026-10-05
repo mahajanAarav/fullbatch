@@ -1,6 +1,6 @@
 """Checkout, authorization, settlement and cancel, using a fake PayPal."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -267,3 +267,143 @@ def test_a_failed_capture_tells_the_buyer_there_was_a_problem(session, make_drop
     paypal.fail_capture.add(order.paypal_authorization_id)
     drops.settle_drop(session, paypal, drop.id, now=after_deadline(drop))
     assert "Payment problem" in notes_for(session, "chat-Ann")[-1]
+
+
+# ---- PayPal's 3-day honor period: re-authorize an old hold before capturing it ----------------------
+
+def with_hold_age(session, order, age: timedelta, now):
+    """Pretend the buyer approved `age` before `now`."""
+    order.authorized_at = now - age
+    session.commit()
+
+
+def test_confirming_a_hold_records_when_it_began(session, make_drop, paypal):
+    order = authorized(session, paypal, make_drop(), 1, "Ann")
+    assert order.authorized_at is not None and abs((datetime.now(timezone.utc) - order.authorized_at).total_seconds()) < 60
+
+
+def test_a_hold_older_than_the_honor_period_is_reauthorized_before_it_is_captured(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    original = order.paypal_authorization_id
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=5), now)
+
+    drops.settle_drop(session, paypal, drop.id, now=now)
+
+    session.refresh(order)
+    assert paypal.reauthorized == [(original, f"{original}-R")]
+    assert paypal.captured == [f"{original}-R"]                          # the capture used the NEW hold, not the old one
+    assert order.paypal_authorization_id == f"{original}-R" and order.status == OrderStatus.CAPTURED
+    assert order.paypal_capture_id == f"CAP-{original}-R"                # the charge id is kept for later reference
+    assert order.authorized_at == now                                    # the honor period started over
+    kinds = session.scalars(select(DropEvent.kind)).all()
+    assert "hold_reauthorized" in kinds
+    assert f"reauthorize-{order.id}" in paypal.request_ids               # a fixed id: safe to retry
+
+
+def test_a_young_hold_is_captured_directly(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=1), now)
+    drops.settle_drop(session, paypal, drop.id, now=now)
+    assert paypal.reauthorized == [] and paypal.captured == [f"AUTH-PPO-{order.id}"]
+
+
+@pytest.mark.parametrize("age,expect_reauth", [
+    (timedelta(days=3) - timedelta(seconds=1), False),   # still inside the honor period
+    (timedelta(days=3), True),                           # exactly at its end: refresh
+    (timedelta(days=20), True),
+])
+def test_the_honor_period_boundary(session, make_drop, paypal, age, expect_reauth):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    now = after_deadline(drop)
+    with_hold_age(session, order, age, now)
+    drops.settle_drop(session, paypal, drop.id, now=now)
+    assert bool(paypal.reauthorized) is expect_reauth
+
+
+def test_if_reauthorizing_fails_the_capture_is_still_attempted_on_the_old_hold(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    original = order.paypal_authorization_id
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=5), now)
+    paypal.fail_reauthorize = True
+
+    drops.settle_drop(session, paypal, drop.id, now=now)
+
+    session.refresh(order)
+    assert paypal.captured == [original] and order.status == OrderStatus.CAPTURED        # PayPal may well honor it
+    assert "hold_reauthorize_failed" in session.scalars(select(DropEvent.kind)).all()
+
+
+def test_if_reauthorizing_and_capturing_both_fail_the_order_is_marked_failed(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=5), now)
+    paypal.fail_reauthorize = True
+    paypal.fail_capture.add(order.paypal_authorization_id)
+    drops.settle_drop(session, paypal, drop.id, now=now)
+    session.refresh(order)
+    assert order.status == OrderStatus.FAILED and "Payment problem" in notes_for(session, "chat-Ann")[-1]
+
+
+def test_a_crash_between_reauthorizing_and_capturing_does_not_reauthorize_twice(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    original = order.paypal_authorization_id
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=5), now)
+    paypal.crash_on_capture = original
+
+    with pytest.raises(RuntimeError):
+        drops.settle_drop(session, paypal, drop.id, now=now)
+    session.refresh(order)
+    assert order.paypal_authorization_id == f"{original}-R"       # the new hold was saved before the crash
+
+    drops.settle_drop(session, paypal, drop.id, now=now)          # the rerun finishes the job
+    session.refresh(order)
+    assert len(paypal.reauthorized) == 1                           # ...without refreshing the hold a second time
+    assert paypal.captured == [f"{original}-R"] and order.status == OrderStatus.CAPTURED
+
+
+def test_releasing_holds_never_reauthorizes_them(session, make_drop, paypal):
+    drop = make_drop(minimum_units=5)                              # will miss its minimum
+    order = authorized(session, paypal, drop, 1, "Ann")
+    now = after_deadline(drop)
+    with_hold_age(session, order, timedelta(days=10), now)
+    drops.settle_drop(session, paypal, drop.id, now=now)
+    assert paypal.reauthorized == [] and paypal.voided == [f"AUTH-PPO-{order.id}"]
+
+
+def test_orders_from_before_the_hold_time_was_recorded_fall_back_to_paypals_expiry(session, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = authorized(session, paypal, drop, 1, "Ann")
+    now = after_deadline(drop)
+    order.authorized_at = None
+    order.authorization_expires_at = now + timedelta(days=5)       # 29 - 5 = 24 days old
+    session.commit()
+    drops.settle_drop(session, paypal, drop.id, now=now)
+    assert len(paypal.reauthorized) == 1
+
+
+def test_a_long_drop_is_refreshed_at_its_deadline(session, seller, paypal, buyer):
+    """A 10-day drop: the buyer approved on day 1, so by the deadline the 3-day guarantee is long gone."""
+    from decimal import Decimal
+
+    start = datetime.now(timezone.utc)
+    drop = drops.create_drop(
+        session, seller.id, "Long batch", Decimal("9"), 10, 1, start + timedelta(days=10), now=start,
+        pickup_address="350 5th Ave", pickup_lat=40.7484, pickup_lng=-73.9857,
+    )
+    order = drops.reserve_stock(session, drop.id, "A", "a@x.co", "chat-a", 1, now=start, buyer_user_id=buyer.id)
+    drops.start_checkout(session, paypal, order.id, "r", "c", now=start)
+    drops.confirm_authorization(session, paypal, f"PPO-{order.id}")
+    order.authorized_at = start + timedelta(days=1)
+    session.commit()
+    drops.settle_drop(session, paypal, drop.id, now=drop.deadline + timedelta(seconds=1))
+    assert len(paypal.reauthorized) == 1 and session.get(type(order), order.id).status == OrderStatus.CAPTURED

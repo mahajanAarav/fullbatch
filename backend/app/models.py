@@ -212,6 +212,9 @@ class Order(Base):
     paypal_order_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     paypal_authorization_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     authorization_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the current hold began. PayPal only guarantees funds for 3 days after this; a longer wait needs a re-authorization.
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paypal_capture_id: Mapped[str | None] = mapped_column(String(64))  # the charge, once captured
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

@@ -32,6 +32,9 @@ MAX_DROP_DAYS = 14
 RESERVATION_MINUTES = 15
 MAX_DELIVERY_KM = 50.0   # about 31 miles: a home baker's van, not a courier network
 MAX_DELIVERY_FEE = Decimal("50")
+# PayPal guarantees the funds for 3 days after a hold begins. Capturing later should be preceded by a re-authorization.
+HONOR_PERIOD = timedelta(days=3)
+AUTHORIZATION_VALID_DAYS = 29
 
 
 class DropError(Exception):
@@ -470,6 +473,7 @@ def confirm_authorization(session: Session, paypal, paypal_order_id: str) -> Ord
     order.status = OrderStatus.AUTHORIZED
     order.paypal_authorization_id = authorization["id"]
     order.authorization_expires_at = _parse_time(authorization.get("expiration_time"))
+    order.authorized_at = _now()
     _log(session, drop_id, "order_authorized", order_id)
     _chat_note(session, order, drop, "authorized")
     session.commit()
@@ -546,6 +550,37 @@ def cancel_drop(session: Session, paypal, drop_id: int, now: datetime | None = N
     return _process_holds(session, paypal, drop_id, now)
 
 
+def _hold_started(order: Order) -> datetime | None:
+    """When the current hold began. Older orders without a recorded time fall back to PayPal's expiry (29 days after)."""
+    if order.authorized_at:
+        return order.authorized_at
+    if order.authorization_expires_at:
+        return order.authorization_expires_at - timedelta(days=AUTHORIZATION_VALID_DAYS)
+    return None
+
+
+def _refresh_old_hold(session: Session, paypal, order: Order, drop_id: int, now: datetime) -> None:
+    """
+    If the hold is past PayPal's 3-day honor period, re-authorize it before capturing, as PayPal recommends.
+    That gives a NEW authorization id and restarts the honor period. A failure is recorded, and the capture is
+    still attempted on the old hold, because PayPal may well honor it.
+    """
+    started = _hold_started(order)
+    if started is None or now - started < HONOR_PERIOD:
+        return
+    try:
+        fresh = paypal.reauthorize_authorization(order.paypal_authorization_id, request_id=f"reauthorize-{order.id}")
+    except PayPalError as err:
+        _log(session, drop_id, "hold_reauthorize_failed", order.id, {"error": str(err)[:200]})
+        session.commit()
+        return
+    _log(session, drop_id, "hold_reauthorized", order.id, {"old": order.paypal_authorization_id, "new": fresh["id"]})
+    order.paypal_authorization_id = fresh["id"]
+    order.authorization_expires_at = _parse_time(fresh.get("expiration_time")) or order.authorization_expires_at
+    order.authorized_at = now  # the honor period starts over, so a rerun does not reauthorize again
+    session.commit()  # saved before the capture, so a crash between the two cannot lose the new id
+
+
 def _process_holds(session: Session, paypal, drop_id: int, now: datetime) -> DropStatus:
     """Capture (filled) or void (failed/cancelled) each remaining hold, one at a time."""
     drop = session.get(Drop, drop_id)
@@ -566,9 +601,11 @@ def _process_holds(session: Session, paypal, drop_id: int, now: datetime) -> Dro
                 continue
             try:
                 if status == DropStatus.FILLED:
-                    paypal.capture_authorization(
+                    _refresh_old_hold(session, paypal, order, drop_id, now)
+                    capture = paypal.capture_authorization(
                         order.paypal_authorization_id, request_id=f"capture-{order.id}"
                     )
+                    order.paypal_capture_id = (capture or {}).get("id")
                     order.status = OrderStatus.CAPTURED
                     _log(session, drop_id, "order_captured", order.id)
                     _chat_note(session, order, drop, "captured")

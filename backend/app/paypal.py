@@ -174,6 +174,23 @@ class PayPalClient:
         )
         return r.json()
 
+    def reauthorize_authorization(self, authorization_id: str, *, request_id: str | None = None) -> dict:
+        """
+        Start a fresh hold (new authorization id, restarted 3-day honor period) on an older one.
+        PayPal recommends this before capturing once the honor period has passed.
+        """
+        r = self._request(
+            "POST",
+            f"/v2/payments/authorizations/{authorization_id}/reauthorize",
+            step="reauthorize authorization",
+            json={},
+            request_id=request_id,
+        )
+        data = r.json()
+        if not data.get("id"):
+            raise PayPalError("read reauthorization", r.status_code, "PayPal did not return an authorization id")
+        return data
+
     def void_authorization(self, authorization_id: str, *, request_id: str | None = None) -> None:
         """Release a hold so the buyer is never charged."""
         self._request(
