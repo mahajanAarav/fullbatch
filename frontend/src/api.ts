@@ -3,6 +3,7 @@
 export interface DropSummary {
   id: number
   seller_id: number
+  shop_name: string
   item_name: string
   unit_price: string
   currency: string

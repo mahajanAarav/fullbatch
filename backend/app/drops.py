@@ -546,6 +546,7 @@ def drop_summary(session: Session, drop: Drop) -> dict:
     return {
         "id": drop.id,
         "seller_id": drop.seller_id,
+        "shop_name": drop.seller.name,
         "item_name": drop.item_name,
         "unit_price": str(drop.unit_price),
         "currency": drop.currency,

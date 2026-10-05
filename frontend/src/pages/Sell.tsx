@@ -135,12 +135,7 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           </button>
         </div>
 
-        {!shop.verified && (
-          <div className="banner" role="status">
-            <strong>Your PayPal account isn’t verified yet.</strong> To protect buyers, only verified sellers can open drops. Verify your account with PayPal,
-            then sign out and sign back in.
-          </div>
-        )}
+        <SetupChecklist verified={shop.verified} hasDrop={(drops?.length ?? 0) > 0} />
 
         <div className="tabs" role="tablist" aria-label="Seller views">
           <button role="tab" aria-selected={tab === 'drops'} className={tab === 'drops' ? 'tab tab-on' : 'tab'} onClick={() => setTab('drops')}>
@@ -227,6 +222,38 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
       </Modal>
       <Toast message={toast} onDone={clearToast} />
     </div>
+  )
+}
+
+// Shows a new seller exactly what is done and what is left, and goes away once everything is.
+function SetupChecklist({ verified, hasDrop }: { verified: boolean; hasDrop: boolean }) {
+  const steps = [
+    { label: 'Signed in with PayPal', done: true },
+    { label: 'Shop opened', done: true },
+    { label: 'PayPal account verified', done: verified },
+    { label: 'First drop created', done: hasDrop },
+  ]
+  if (steps.every((x) => x.done)) return null
+  return (
+    <section className="checklist card" aria-label="Getting started">
+      <ol>
+        {steps.map((step) => (
+          <li key={step.label} className={step.done ? 'check-done' : 'check-todo'}>
+            <span className="check-mark" aria-hidden="true">
+              {step.done ? '✓' : ''}
+            </span>
+            <span>{step.label}</span>
+            <span className="visually-hidden">{step.done ? ' (done)' : ' (to do)'}</span>
+          </li>
+        ))}
+      </ol>
+      {!verified && (
+        <p className="note">
+          <strong>Your PayPal account isn’t verified yet.</strong> To protect buyers, only verified sellers can open drops. Verify your account with PayPal, then
+          sign out and sign back in.
+        </p>
+      )}
+    </section>
   )
 }
 

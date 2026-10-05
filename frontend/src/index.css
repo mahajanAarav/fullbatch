@@ -65,7 +65,7 @@ a { color: var(--accent); }
 .brand { font-family: var(--serif); font-size: 1.3rem; font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: -0.02em; }
 .brand span { color: var(--accent); }
 .topbar nav { display: flex; gap: 4px; }
-.topbar nav a { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 6px 12px; border-radius: 8px; }
+.topbar nav a { white-space: nowrap; color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 6px 12px; border-radius: 8px; }
 .topbar nav a:hover { color: var(--ink); background: var(--line); }
 .topbar nav a.active { color: var(--ink); background: var(--accent-soft); }
 .foot { border-top: 1px solid var(--line); margin-top: 32px; padding: 16px 0; color: var(--muted); font-size: 0.78rem; text-align: center; }
@@ -250,6 +250,59 @@ a { color: var(--accent); }
 .mini-table tr:last-child td { border-bottom: 0; }
 @media (max-width: 820px) { .planner { grid-template-columns: minmax(0, 1fr); } }
 
+/* ---- home: marketplace ---- */
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.search, .select { padding: 8px 11px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 8px; font: inherit; font-size: 0.88rem; }
+.search { min-width: 220px; }
+.tip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 10px 14px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 10px; font-size: 0.88rem; }
+.tip em { font-style: normal; font-weight: 700; }
+.how { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line); }
+.how h2 { margin-bottom: 12px; }
+.how ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.how li { display: flex; gap: 12px; align-items: flex-start; }
+.how li > span { flex: none; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 0.82rem; }
+.cta-band { margin-top: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); }
+.cta-band h2 { margin-bottom: 2px; }
+.good { color: var(--good); }
+
+/* ---- drop cards, the visual version ---- */
+.drop { padding: 0; overflow: hidden; gap: 0; }
+.drop-tile { position: relative; height: 74px; display: flex; align-items: flex-end; justify-content: space-between; padding: 8px 12px; color: #fff; overflow: hidden; }
+.drop-initial { position: absolute; right: 10px; top: -14px; font-family: var(--serif); font-size: 5.2rem; font-weight: 700; line-height: 1; opacity: 0.2; pointer-events: none; }
+.drop-shop { font-size: 0.78rem; font-weight: 600; text-shadow: 0 1px 2px rgb(0 0 0 / 30%); }
+.pill-on-tile { background: rgb(255 255 255 / 92%); color: #7a2e17; position: relative; }
+.pill-on-tile.pill-filled { background: #def1e7; color: #1f6b49; }
+.pill-on-tile.pill-failed, .pill-on-tile.pill-cancelled { background: #f8dddb; color: #a8392f; }
+.drop-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 9px; }
+.drop-progress { font-size: 0.92rem; }
+
+/* ---- skeleton loaders ---- */
+.skeleton { background: linear-gradient(90deg, var(--line) 25%, color-mix(in srgb, var(--line) 55%, var(--surface)) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite linear; border-radius: 8px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.skeleton-card { padding: 0 0 16px; gap: 10px; }
+.skeleton-tile { height: 74px; border-radius: 0; }
+.skeleton-card > :not(.skeleton-tile) { margin: 0 16px; }
+.skeleton-line { height: 14px; }
+.skeleton-bar { height: 10px; border-radius: 999px; }
+.skeleton-button { height: 36px; }
+.skeleton-list { height: 160px; }
+
+/* ---- navigation badge, orders ---- */
+.topbar nav a { position: relative; }
+.nav-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 700; }
+.page { padding-top: 22px; }
+.order-row-rich > div { gap: 3px; }
+
+/* ---- seller setup checklist ---- */
+.checklist { padding: 12px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+.checklist ol { list-style: none; margin: 0; padding: 0; display: flex; gap: 8px 22px; flex-wrap: wrap; }
+.checklist li { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; font-weight: 600; }
+.check-mark { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 0.7rem; border: 2px solid var(--line); }
+.check-done .check-mark { background: var(--good); border-color: var(--good); color: #fff; }
+.check-done { color: var(--muted); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.status-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ---- toast ---- */
 .toast { position: fixed; left: 20px; bottom: 20px; z-index: 30; max-width: min(440px, calc(100vw - 40px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--ink); color: var(--bg); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); font-size: 0.9rem; animation: rise 0.25s ease; }
 .toast .icon-button { color: var(--bg); opacity: 0.7; }
@@ -276,4 +329,14 @@ a { color: var(--accent); }
   .page-head { flex-direction: column; align-items: flex-start; }
 }
 @media (max-width: 480px) { .field-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .topbar nav { gap: 0; }
+  .topbar nav a { padding: 6px 8px; white-space: nowrap; font-size: 0.84rem; }
+  .brand { font-size: 1.15rem; }
+  .account { margin-left: 4px; padding-left: 8px; }
+  .account-name { display: none; }
+  .search { min-width: 0; flex: 1; }
+  .toolbar { width: 100%; }
+  .toolbar .select { flex: 1; }
+}
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

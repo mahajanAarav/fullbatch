@@ -40,7 +40,7 @@ backend/
   migrations/     Alembic
   scripts/        dev_db.py, sandbox checks, live model check
   tests/          pytest (real Postgres via pixeltable-pgserver, fake PayPal)
-frontend/         React + Vite + TypeScript
+frontend/         React + Vite + TypeScript. Pages: Home (the marketplace, no hero), Orders, OrderStatus, Sell (Drops / Planner / Dashboard tabs), SignIn
 workflows/        (empty) reserved for Render Workflows
 Dockerfile, render.yaml, DEPLOY.md   deployment (one Render web service)
 dev.sh            starts the database, API and frontend locally

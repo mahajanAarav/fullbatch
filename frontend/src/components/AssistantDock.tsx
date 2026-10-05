@@ -5,7 +5,7 @@ import { useStoredFlag } from '../hooks'
 // with the buttons and forms on the page.
 // `overlay` floats the panel over the page (used when the page itself needs the full width, like the dashboard).
 export function AssistantDock({ children, label = 'Assistant', overlay = false }: { children: ReactNode; label?: string; overlay?: boolean }) {
-  const [open, setOpen] = useStoredFlag(overlay ? 'fullbatch.dock.overlay' : 'fullbatch.dock', () => !overlay && window.innerWidth >= 1100)
+  const [open, setOpen] = useStoredFlag(overlay ? 'fullbatch.dock.overlay' : 'fullbatch.dock', () => false) // closed until the user opens it; their choice is then remembered
 
   return (
     <>

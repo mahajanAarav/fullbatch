@@ -106,9 +106,14 @@ function Message({
             <dd>{whenText(order.deadline)}</dd>
           </dl>
         )}
-        <Link to="/buy" className="button">
-          Back to drops
-        </Link>
+        <div className="status-actions">
+          <Link to="/orders" className="button">
+            View my orders
+          </Link>
+          <Link to="/" className="button button-ghost">
+            Browse more drops
+          </Link>
+        </div>
       </div>
     </main>
   )

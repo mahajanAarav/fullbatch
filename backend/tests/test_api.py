@@ -455,3 +455,9 @@ def test_plan_can_focus_on_one_drop_but_only_your_own(make_client, session_facto
     assert a.get("/me/plan", params={"drop_id": theirs["id"]}).status_code == 404
     still_open = make_drop(a).json()
     assert a.get("/me/plan", params={"drop_id": still_open["id"]}).status_code == 404   # not finished
+
+
+def test_drops_carry_the_shops_name_so_buyers_know_who_is_selling(make_client):
+    make_drop(seller_client(make_client))
+    drop = make_client().get("/drops").json()["drops"][0]
+    assert drop["shop_name"] == "Bea's Bakery"
