@@ -4,6 +4,13 @@ export interface DropSummary {
   id: number
   seller_id: number
   shop_name: string
+  offers_pickup: boolean
+  offers_delivery: boolean
+  area: string | null // a public neighborhood label; never the exact address
+  lat: number | null // rounded to ~1 km
+  lng: number | null
+  delivery_radius_km: number | null
+  delivery_fee: string
   item_name: string
   unit_price: string
   currency: string
@@ -38,6 +45,12 @@ export interface Order {
   deadline: string
   minimum_units: number
   paid_up_units: number
+  fulfillment: 'pickup' | 'delivery'
+  delivery_fee: string
+  area: string | null
+  pickup_address: string | null // only once the hold is approved
+  pickup_notes: string | null // only once the hold is approved
+  delivery_address: string | null
 }
 
 export interface ChatLine {
@@ -117,6 +130,12 @@ export interface NewDrop {
   minimum_units: number
   max_per_buyer: number
   deadline: string // ISO 8601 with a timezone
+  pickup_address: string
+  pickup_notes: string | null
+  offers_pickup: boolean
+  offers_delivery: boolean
+  delivery_radius_miles: number | null
+  delivery_fee: string
 }
 export const createDrop = (drop: NewDrop) => post<Drop>('/drops', drop)
 export const cancelDrop = (id: number) => post<{ id: number; status: string }>(`/drops/${id}/cancel`, {})
@@ -127,7 +146,26 @@ export interface PlacedOrder {
   amount: string
   reserved_until: string
 }
-export const placeOrder = (dropId: number, quantity: number) => post<PlacedOrder>(`/drops/${dropId}/orders`, { quantity })
+export const placeOrder = (
+  dropId: number,
+  quantity: number,
+  fulfillment: 'pickup' | 'delivery' = 'pickup',
+  deliveryAddress?: string,
+) => post<PlacedOrder>(`/drops/${dropId}/orders`, { quantity, fulfillment, delivery_address: deliveryAddress })
+
+// Lets a seller confirm an address was understood before they post a drop with it.
+export const checkAddress = (query: string) => post<{ area: string; label: string }>('/geo/check', { query })
+
+export interface FulfillmentRow {
+  order_id: number
+  buyer: string // first name and last initial only
+  quantity: number
+  status: OrderStatus
+  fulfillment: 'pickup' | 'delivery'
+  delivery_address: string | null
+  amount: string
+}
+export const dropOrders = (dropId: number) => request<{ orders: FulfillmentRow[] }>(`/me/drops/${dropId}/orders`).then((r) => r.orders)
 
 // Flat rows for the AG Studio dashboard. Buyers' identities are never included.
 export interface AnalyticsDrop {

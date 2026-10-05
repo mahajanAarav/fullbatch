@@ -4,6 +4,7 @@ import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { CreateDropDialog, type DropDraft } from '../components/CreateDropDialog'
 import { DropCard } from '../components/DropCard'
+import { FulfillmentDialog } from '../components/FulfillmentDialog'
 import { Modal } from '../components/Modal'
 import { Toast } from '../components/Toast'
 import { VerifyEmailDialog } from '../components/VerifyEmailDialog'
@@ -103,6 +104,7 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<DropDraft | undefined>(undefined) // set when the planner pre-fills the form
   const [cancelling, setCancelling] = useState<Drop | null>(null)
+  const [viewing, setViewing] = useState<Drop | null>(null) // the drop whose orders are being looked at
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const clearToast = useCallback(() => setToast(null), [])
@@ -193,11 +195,16 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
               key={d.id}
               drop={d}
               action={
-                d.status === 'open' && (
-                  <button className="button button-ghost button-block" onClick={() => { setCancelError(null); setCancelling(d) }}>
-                    Cancel drop
+                <div className="action-row">
+                  <button className="button button-ghost" onClick={() => setViewing(d)}>
+                    Orders
                   </button>
-                )
+                  {d.status === 'open' && (
+                    <button className="button button-ghost" onClick={() => { setCancelError(null); setCancelling(d) }}>
+                      Cancel drop
+                    </button>
+                  )}
+                </div>
               }
             />
           ))}
@@ -217,6 +224,8 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
       </AssistantDock>
 
       <CreateDropDialog open={creating} draft={draft} onClose={() => setCreating(false)} onCreated={() => { reload(); setTab('drops'); setToast('Drop created. It’s open for orders.') }} />
+
+      <FulfillmentDialog drop={viewing} onClose={() => setViewing(null)} />
 
       <Modal open={cancelling !== null} onClose={() => setCancelling(null)} title="Cancel this drop?">
         <p>

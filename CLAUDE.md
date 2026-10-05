@@ -31,6 +31,7 @@ backend/
     auth.py       sign-in: PayPal login, dev login, cookie sessions, access checks
     paypal.py     authorize, capture, void, plus Log in with PayPal calls
     drops.py      drop engine: stock, minimum, deadline, settlement, seller verification
+    geo.py        address lookup (free OpenStreetMap Nominatim, cached, rate limited) and distance math
     studio_ai.py  server side of AG Studio's assistant (POST /ai/turn): guarded, rate limited, runs our Groq-then-Gemini chain
     planner.py    drop planner: per-drop reports + explainable next-drop recommendations (numbers from code, not the LLM)
     agent.py      chat agent and its role-scoped tools
@@ -66,6 +67,7 @@ dev.sh            starts the database, API and frontend locally
 - The LLM never calls PayPal directly. Capture, void, and refund go through functions in `backend/app/paypal.py`.
 - Keep the PayPal functions small and reusable: `get_token`, `create_order`, `authorize_order`, `capture_authorization`, `void_authorization`.
 - Who is calling comes from the sign-in cookie, never from a request body or from the LLM. Sellers act only on their own drops; buyers see only their own orders.
+- A drop's exact pickup address and notes, and a buyer's delivery address, are private: public data carries only a neighborhood label and coordinates rounded to ~1 km. The exact address is revealed only to the buyer whose hold is approved; sellers see delivery addresses only for approved orders.
 - Only shops whose owner has a PayPal-verified account may open drops. The rule lives in `drops.create_drop`, so every path is covered.
 - `DEV_LOGIN` (the local sign-in that skips PayPal) must never be set on the deployed app.
 - Commit in small steps with clear messages.

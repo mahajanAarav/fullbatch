@@ -92,6 +92,14 @@ create an SMTP key under SMTP & API, then set `SMTP_HOST=smtp-relay.brevo.com`, 
 Save, let Render redeploy, then sign in with an account whose email is unconfirmed and press Reserve to test it.
 Treat the app password / SMTP key like any other secret. It goes only in Render.
 
+## 8. Addresses and maps (nothing to set up)
+
+Pickup and delivery addresses are looked up with OpenStreetMap's free Nominatim service. There is no key and nothing to configure.
+Its usage policy asks for no more than one lookup a second and an identifying User-Agent; the app does both, caches results, and
+rate limits address checks per seller. Lookups are restricted to the United States by default, so a bare ZIP code means a US ZIP.
+To allow other countries, add a `GEO_COUNTRIES` variable in Render with comma-separated ISO codes (for example `us,ca`). Buyers'
+own locations (ZIP code or "use my location") stay in their browser and are never sent to the server.
+
 ## Notes
 
 - The Docker build has not been run on the author's machine (no Docker installed). The same steps were checked separately:

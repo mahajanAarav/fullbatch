@@ -31,7 +31,26 @@ function tileFor(name: string): string {
   return `linear-gradient(135deg, ${a}, ${b})`
 }
 
-export function DropCard({ drop, action, showShop = true }: { drop: Drop; action?: ReactNode; showShop?: boolean }) {
+const Pin = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 21s-7-5.2-7-11a7 7 0 0114 0c0 5.8-7 11-7 11z" />
+    <circle cx="12" cy="10" r="2.5" />
+  </svg>
+)
+
+export function DropCard({
+  drop,
+  action,
+  showShop = true,
+  distance = null,
+  deliversToYou = null,
+}: {
+  drop: Drop
+  action?: ReactNode
+  showShop?: boolean
+  distance?: number | null // miles from the viewer, when they've shared a location
+  deliversToYou?: boolean | null
+}) {
   const now = useNow()
   const total = drop.quantity_total
   const approved = drop.paid_up_units
@@ -52,6 +71,17 @@ export function DropCard({ drop, action, showShop = true }: { drop: Drop; action
 
       <div className="drop-body">
         <h3>{drop.item_name}</h3>
+        {(drop.area || distance !== null) && (
+          <p className="drop-where">
+            <Pin /> {drop.area}
+            {distance !== null && (
+              <>
+                {drop.area ? ' · ' : ''}
+                <strong>{distance < 0.1 ? 'under 0.1' : distance.toFixed(1)} mi away</strong>
+              </>
+            )}
+          </p>
+        )}
         <p className="drop-price">
           <strong>{money(drop.unit_price, drop.currency)}</strong> <span className="muted">each · max {drop.max_per_buyer} per person</span>
         </p>
@@ -62,6 +92,16 @@ export function DropCard({ drop, action, showShop = true }: { drop: Drop; action
           <div className="bar-fill reserved" style={{ left: pct(approved), width: pct(reserved) }} />
           <div className="bar-min" style={{ left: pct(drop.minimum_units) }} title="Minimum needed" />
         </div>
+
+        <p className="drop-ways">
+          {drop.offers_pickup && <span className="way">Pickup</span>}
+          {drop.offers_delivery && (
+            <span className={`way ${deliversToYou ? 'way-yes' : ''}`}>
+              Delivery{Number(drop.delivery_fee) > 0 ? ` · ${money(drop.delivery_fee)}` : ' · free'}
+              {deliversToYou === true ? ' · delivers to you' : deliversToYou === false ? ' · not to your area' : ''}
+            </span>
+          )}
+        </p>
 
         {isOpen ? (
           <>

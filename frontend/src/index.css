@@ -310,6 +310,34 @@ a { color: var(--accent); }
 .dev-code { font-weight: 700; letter-spacing: 0.2em; font-size: 1.05rem; }
 .form-actions.between { justify-content: space-between; align-items: center; }
 
+/* ---- location, pickup and delivery ---- */
+.locbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font-size: 0.88rem; }
+.zip { min-width: 0; width: 96px; }
+.drop-where { display: flex; align-items: center; gap: 5px; font-size: 0.85rem; color: var(--muted); margin-top: -3px; }
+.drop-where strong { color: var(--ink); }
+.drop-ways { display: flex; flex-wrap: wrap; gap: 6px; }
+.way { font-size: 0.74rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--line); color: var(--muted); }
+.way-yes { background: var(--good-soft); color: var(--good); }
+.segmented { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.seg { flex: 1; padding: 9px 10px; border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600; font-size: 0.88rem; cursor: pointer; }
+.seg-on { background: var(--accent); color: var(--accent-ink); }
+.where-note, .found { font-size: 0.85rem; padding: 9px 11px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.found { background: var(--good-soft); border-color: transparent; color: var(--good); }
+fieldset.where { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+fieldset.where legend { padding: 0 6px; font-weight: 700; font-size: 0.85rem; }
+.inline-field { display: flex; gap: 8px; }
+.inline-field input { flex: 1; min-width: 0; }
+.form .check { flex-direction: row; align-items: center; gap: 8px; font-weight: 500; }
+.form .check input { width: auto; }
+.where-card { width: 100%; padding: 12px 14px; border-radius: 10px; background: var(--good-soft); display: flex; flex-direction: column; gap: 2px; }
+.where-card p { font-weight: 700; }
+.where-hidden { background: var(--bg); border: 1px dashed var(--line); }
+.action-row { display: flex; gap: 8px; }
+.action-row .button { flex: 1; }
+.fulfil ul { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; }
+.fulfil li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.fulfil li > div { display: flex; flex-direction: column; }
+
 /* ---- toast ---- */
 .toast { position: fixed; left: 20px; bottom: 20px; z-index: 30; max-width: min(440px, calc(100vw - 40px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--ink); color: var(--bg); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); font-size: 0.9rem; animation: rise 0.25s ease; }
 .toast .icon-button { color: var(--bg); opacity: 0.7; }
