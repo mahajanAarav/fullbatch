@@ -144,3 +144,38 @@ def test_deadline_job_pays_sellers_end_to_end(session, session_factory, make_dro
     summary = drops.run_deadline_job(session_factory, paypal, now=after_deadline(drop), fee_percent=10.0)
     assert summary["payouts"] == [drop.id]
     assert paypal.payouts[0]["amount"] == Decimal("48.60")  # 54.00 minus 10%
+
+
+# ---- webhooks --------------------------------------------------------------
+
+def test_record_money_event_logs_once_and_ignores_unknown(session, session_factory, make_drop, paypal):
+    from app.models import DropEvent
+    drop = filled_drop(session, make_drop, paypal)
+    order = session.scalars(select(drops.Order).where(drops.Order.drop_id == drop.id)).first()
+    res = {"id": order.paypal_capture_id, "status": "COMPLETED"}
+    for _ in range(2):  # PayPal delivers duplicates
+        assert drops.record_money_event(session, "PAYMENT.CAPTURE.COMPLETED", res) is True
+    kinds = [e.kind for e in session.scalars(select(DropEvent).where(DropEvent.order_id == order.id))]
+    assert kinds.count("paypal_capture_completed") == 1
+    assert drops.record_money_event(session, "PAYMENT.CAPTURE.COMPLETED", {"id": "CAP-NOPE"}) is False
+
+
+def test_refund_notice_finds_its_capture_through_the_up_link(session, make_drop, paypal):
+    drop = filled_drop(session, make_drop, paypal)
+    order = session.scalars(select(drops.Order).where(drops.Order.drop_id == drop.id)).first()
+    refund = {"id": "REFUND-1", "status": "COMPLETED", "links": [
+        {"rel": "up", "href": f"https://api.sandbox.paypal.com/v2/payments/captures/{order.paypal_capture_id}"}]}
+    assert drops.record_money_event(session, "PAYMENT.CAPTURE.REFUNDED", refund) is True
+
+
+def test_payout_event_names(session):
+    assert payouts.batch_id_of({"batch_header": {"payout_batch_id": "B1"}}) == "B1"
+    assert payouts.batch_id_of({"payout_batch_id": "B2", "transaction_status": "SUCCESS"}) == "B2"
+
+
+def test_order_timeline_tells_the_paypal_story(session, make_drop, paypal):
+    drop = filled_drop(session, make_drop, paypal)
+    order = session.scalars(select(drops.Order).where(drops.Order.drop_id == drop.id)).first()
+    steps = drops.order_timeline(session, order)
+    assert [s["kind"] for s in steps] == ["reserved", "checkout_started", "order_authorized", "hold_reauthorized", "order_captured"]  # 3 days passed: renewed
+    assert steps[-1]["via"] == "Payments API · capture"

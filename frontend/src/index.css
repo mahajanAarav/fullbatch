@@ -414,3 +414,20 @@ fieldset.where legend { padding: 0 6px; font-weight: 700; font-size: 0.85rem; }
   .toolbar .select { flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+
+/* PayPal activity on the order page and payouts on the seller page */
+.trail { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.trail-title { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 6px; }
+.trail code, .payout-batch { font-size: 0.75rem; word-break: break-all; }
+.trail-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.trail-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 0.875rem; }
+.trail-via { font-size: 0.6875rem; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft, rgba(0,0,0,.06)); color: var(--muted); }
+.trail-list time { margin-left: auto; }
+.payouts { margin: 16px 0; }
+.payouts table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.payouts th, .payouts td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.payouts td.num, .payouts th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill-payout { font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; background: rgba(0,0,0,.06); }
+.pill-payout-success { background: rgba(30,140,70,.15); }
+.pill-payout-denied, .pill-payout-unavailable { background: rgba(190,50,40,.14); }

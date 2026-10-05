@@ -727,3 +727,39 @@ def test_cancelled_and_closed_drops_are_not_listed_as_open_on_a_shop_page(make_c
     seller.post(f"/drops/{gone['id']}/cancel")
     seller.post("/drops", json=drop_body(item_name="Live one", **located()))
     assert [d["item_name"] for d in make_client().get("/shops/1").json()["open_drops"]] == ["Live one"]
+
+
+def test_webhook_payout_event_updates_the_payout(make_client, paypal, session_factory):
+    from app.models import Drop, Payout, Seller
+    with session_factory() as s:
+        seller = Seller(name="S")
+        s.add(seller); s.flush()
+        drop = Drop(seller_id=seller.id, item_name="x", unit_price=1, quantity_total=5, minimum_units=1,
+                    deadline=datetime.now(timezone.utc))
+        s.add(drop); s.flush()
+        s.add(Payout(drop_id=drop.id, seller_id=seller.id, gross=10, fee=1, net=9, batch_id="B-1", status="pending"))
+        s.commit()
+    hook = make_client()
+    ev = {"event_type": "PAYMENT.PAYOUTSBATCH.SUCCESS", "resource": {"batch_header": {"payout_batch_id": "B-1"}}}
+    assert hook.post("/paypal/webhook", json=ev).json() == {"handled": True}
+    with session_factory() as s:
+        assert s.scalar(select(Payout.status)) == "success"
+    ev["resource"]["batch_header"]["payout_batch_id"] = "B-OTHER"
+    assert hook.post("/paypal/webhook", json=ev).json() == {"handled": False}
+
+
+# ---- payouts + order timeline ------------------------------------------------------
+
+def test_payouts_endpoint_is_private_to_the_shop_and_lists_the_split(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    assert make_client().get("/me/payouts").status_code == 401
+    drop = make_drop(seller, quantity_total=10, minimum_units=2).json()
+    ann = buyer_client(make_client, "ann@example.com", "Ann")
+    order_id = paid_order(ann, drop["id"], 2)
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4), fee_percent=5.0)
+    body = seller.get("/me/payouts").json()
+    assert body["payouts"][0]["gross"] == "18.00" and body["payouts"][0]["fee"] == "0.90" and body["payouts"][0]["net"] == "17.10"
+    order = ann.get(f"/orders/{order_id}").json()
+    assert order["paypal"]["capture_id"].startswith("CAP-")
+    assert [s["kind"] for s in order["timeline"]][-1] == "order_captured"
+    assert "Ann" not in str(body)

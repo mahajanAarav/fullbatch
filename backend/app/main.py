@@ -25,13 +25,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import agent, auth, drops, geo, planner, studio_ai
+from app import agent, auth, drops, geo, payouts, planner, studio_ai
 from app.auth import buyer_chat_id, require_shop, require_user, require_verified_email
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.deps import get_geocoder, get_llm, get_paypal
 from app.llm import LLMError
-from app.models import ChatMessage, Drop, Order, OrderStatus, Seller, User
+from app.models import ChatMessage, Drop, Order, OrderStatus, Payout, Seller, User
 from app.paypal import PayPalError
 from app.ratelimit import RateLimiter
 
@@ -154,6 +154,14 @@ def order_view(session: Session, order: Order) -> dict:
         "deadline": drop.deadline.isoformat(),
         "minimum_units": drop.minimum_units,
         "paid_up_units": progress["paid_up_units"],
+        # The PayPal side of this order, so the buyer can see exactly where their money is.
+        "paypal": {
+            "order_id": order.paypal_order_id,
+            "authorization_id": order.paypal_authorization_id,
+            "hold_expires": order.authorization_expires_at.isoformat() if order.authorization_expires_at else None,
+            "capture_id": order.paypal_capture_id,
+        },
+        "timeline": drops.order_timeline(session, order),
     }
 
 
@@ -312,6 +320,27 @@ def my_analytics(shop: Seller = Depends(require_shop), session: Session = Depend
                 "amount_collected": float(o.amount) if status == "captured" else 0.0,
             })
     return {"drops": drops_out, "orders": orders_out}
+
+
+@app.get("/me/payouts")
+def my_payouts(
+    shop: Seller = Depends(require_shop),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    """What the platform has paid (or will pay) this shop through PayPal Payouts, and the fee taken."""
+    rows = session.execute(
+        select(Payout, Drop.item_name).join(Drop, Drop.id == Payout.drop_id)
+        .where(Payout.seller_id == shop.id).order_by(Payout.id.desc())
+    ).all()
+    return {
+        "fee_percent": settings.platform_fee_percent,
+        "payouts": [{
+            "drop_id": p.drop_id, "item_name": name, "gross": str(p.gross), "fee": str(p.fee), "net": str(p.net),
+            "currency": p.currency, "status": p.status, "detail": p.detail, "batch_id": p.batch_id,
+            "updated_at": p.updated_at.isoformat(),
+        } for p, name in rows],
+    }
 
 
 @app.get("/me/plan")
@@ -534,6 +563,14 @@ def _handle_webhook(session: Session, paypal, settings: Settings, headers, raw_b
         except (drops.OrderNotFound, drops.OrderNotPayable, drops.DropNotOpen):
             # Nothing more to do. Answer 200 so PayPal does not retry forever.
             return {"handled": False}
+    kind = event.get("event_type", "")
+    resource = event.get("resource") or {}
+    if kind in payouts.EVENT_STATUS:
+        batch = payouts.batch_id_of(resource)
+        detail = (resource.get("transaction_status") or kind)[:300]
+        return {"handled": bool(batch) and payouts.apply_batch_event(session, batch, payouts.EVENT_STATUS[kind], detail)}
+    if kind in drops.MONEY_EVENTS or kind in drops.AUTH_EVENTS:
+        return {"handled": drops.record_money_event(session, kind, resource)}
     return {"handled": False}
 
 

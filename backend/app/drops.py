@@ -550,6 +550,49 @@ def cancel_drop(session: Session, paypal, drop_id: int, now: datetime | None = N
     return _process_holds(session, paypal, drop_id, now)
 
 
+# PayPal tells us after the fact what happened to money we moved. We keep it in the drop's event log.
+MONEY_EVENTS = {
+    "PAYMENT.CAPTURE.COMPLETED": "paypal_capture_completed",
+    "PAYMENT.CAPTURE.DENIED": "paypal_capture_denied",
+    "PAYMENT.CAPTURE.PENDING": "paypal_capture_pending",
+    "PAYMENT.CAPTURE.REFUNDED": "paypal_capture_refunded",
+    "PAYMENT.CAPTURE.REVERSED": "paypal_capture_reversed",
+}
+AUTH_EVENTS = {
+    "PAYMENT.AUTHORIZATION.VOIDED": "paypal_authorization_voided",
+}
+
+
+def record_money_event(session: Session, event_type: str, resource: dict) -> bool:
+    """
+    Note a PayPal capture/void notice against the order it belongs to. Returns False for ids
+    we do not know. Duplicate deliveries are ignored, because PayPal does send those.
+    """
+    kind = MONEY_EVENTS.get(event_type) or AUTH_EVENTS.get(event_type)
+    if kind is None:
+        return False
+    ref = resource.get("id")
+    if event_type in MONEY_EVENTS:
+        # A refund notice carries the refund's own id; the capture it belongs to is the "up" link.
+        up = next((l.get("href", "") for l in resource.get("links") or [] if l.get("rel") == "up"), "")
+        capture_id = up.rsplit("/", 1)[-1] if event_type in ("PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED") and up else ref
+        match = Order.paypal_capture_id == capture_id
+    else:
+        match = Order.paypal_authorization_id == ref
+    order = session.scalar(select(Order).where(match)) if ref else None
+    if order is None:
+        return False
+    already = session.scalar(
+        select(DropEvent.id).where(
+            DropEvent.order_id == order.id, DropEvent.kind == kind, DropEvent.detail["paypal_id"].as_string() == ref
+        ).limit(1)
+    )
+    if already is None:
+        _log(session, order.drop_id, kind, order.id, {"paypal_id": ref, "status": resource.get("status")})
+        session.commit()
+    return True
+
+
 def _hold_started(order: Order) -> datetime | None:
     """When the current hold began. Older orders without a recorded time fall back to PayPal's expiry (29 days after)."""
     if order.authorized_at:
@@ -788,3 +831,30 @@ def list_open_drops(session: Session, now: datetime | None = None, limit: int = 
             .limit(limit)
         )
     )
+
+
+# What each logged step means in PayPal terms, for the buyer-facing timeline.
+TIMELINE_LABELS = {
+    "checkout_started": ("PayPal checkout created", "Orders API · create order"),
+    "order_authorized": ("Funds held on your PayPal", "Orders API · authorize"),
+    "hold_reauthorized": ("Hold renewed", "Payments API · reauthorize"),
+    "order_captured": ("Charged, the drop filled", "Payments API · capture"),
+    "order_voided": ("Hold released, you were not charged", "Payments API · void"),
+    "order_failed": ("PayPal could not complete the payment", "Payments API"),
+    "order_expired": ("Reservation ended", None),
+    "paypal_capture_completed": ("PayPal confirmed the charge", "Webhook · capture completed"),
+    "paypal_capture_refunded": ("Refunded by PayPal", "Webhook · capture refunded"),
+    "paypal_capture_reversed": ("Charge reversed", "Webhook · capture reversed"),
+    "paypal_capture_denied": ("PayPal denied the charge", "Webhook · capture denied"),
+    "paypal_authorization_voided": ("PayPal confirmed the release", "Webhook · authorization voided"),
+}
+
+
+def order_timeline(session: Session, order: Order) -> list[dict]:
+    """Everything that happened to one order, oldest first, with the PayPal API behind each step."""
+    steps = [{"kind": "reserved", "label": "Units reserved for you", "via": None, "at": order.created_at.isoformat()}]
+    for e in session.scalars(select(DropEvent).where(DropEvent.order_id == order.id).order_by(DropEvent.id)):
+        if e.kind in TIMELINE_LABELS:
+            label, via = TIMELINE_LABELS[e.kind]
+            steps.append({"kind": e.kind, "label": label, "via": via, "at": e.created_at.isoformat()})
+    return steps

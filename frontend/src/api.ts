@@ -52,6 +52,8 @@ export interface Order {
   pickup_address: string | null // only once the hold is approved
   pickup_notes: string | null // only once the hold is approved
   delivery_address: string | null
+  paypal: { order_id: string | null; authorization_id: string | null; hold_expires: string | null; capture_id: string | null }
+  timeline: { kind: string; label: string; via: string | null; at: string }[]
 }
 
 export interface ChatLine {
@@ -258,3 +260,18 @@ export interface Shop {
   open_drops: Drop[]
 }
 export const getShop = (id: number) => request<Shop>(`/shops/${id}`)
+
+
+export interface PayoutRow {
+  drop_id: number
+  item_name: string
+  gross: string
+  fee: string
+  net: string
+  currency: string
+  status: 'pending' | 'success' | 'unclaimed' | 'denied' | 'unavailable' | 'skipped'
+  detail: string | null
+  batch_id: string | null
+  updated_at: string
+}
+export const myPayouts = () => request<{ fee_percent: number; payouts: PayoutRow[] }>('/me/payouts')

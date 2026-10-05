@@ -6,6 +6,7 @@ import { CreateDropDialog, type DropDraft } from '../components/CreateDropDialog
 import { DropCard } from '../components/DropCard'
 import { FulfillmentDialog } from '../components/FulfillmentDialog'
 import { Modal } from '../components/Modal'
+import { PayoutsPanel } from '../components/PayoutsPanel'
 import { Toast } from '../components/Toast'
 import { VerifyEmailDialog } from '../components/VerifyEmailDialog'
 import { useAuth } from '../authContext'
@@ -179,6 +180,8 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           <Kpi label="On hold" value={money(t.onHold)} hint="not charged yet" />
           <Kpi label="Collected" value={money(t.collected)} hint="from filled drops" />
         </section>
+
+        <PayoutsPanel />
 
         {error && <p className="error">{error}</p>}
         {drops && drops.length === 0 && (

@@ -116,6 +116,7 @@ function Message({
             <dd>{whenText(order.deadline)}</dd>
           </dl>
         )}
+        {order && <PayPalTrail order={order} />}
         {actions}
         <div className="status-actions">
           <Link to="/orders" className={actions ? 'button button-ghost' : 'button'}>
@@ -127,6 +128,37 @@ function Message({
         </div>
       </div>
     </main>
+  )
+}
+
+
+// The PayPal side of the order: where the money is now, and every PayPal step so far.
+function PayPalTrail({ order }: { order: Awaited<ReturnType<typeof getOrder>> }) {
+  const holding = order.status === 'authorized' && order.paypal.authorization_id
+  return (
+    <section className="trail" aria-label="PayPal activity">
+      <h2 className="trail-title">PayPal activity</h2>
+      {holding && (
+        <p className="muted small">
+          Hold <code>{order.paypal.authorization_id}</code>
+          {order.paypal.hold_expires && <> · PayPal keeps it until {whenText(order.paypal.hold_expires)}; we renew it if the drop runs long</>}
+        </p>
+      )}
+      {order.paypal.capture_id && (
+        <p className="muted small">
+          Charge <code>{order.paypal.capture_id}</code>
+        </p>
+      )}
+      <ol className="trail-list">
+        {order.timeline.map((s, i) => (
+          <li key={i}>
+            <span>{s.label}</span>
+            {s.via && <span className="trail-via">{s.via}</span>}
+            <time className="muted small" dateTime={s.at}>{whenText(s.at)}</time>
+          </li>
+        ))}
+      </ol>
+    </section>
   )
 }
 

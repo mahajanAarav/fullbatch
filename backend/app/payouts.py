@@ -139,3 +139,22 @@ def run_payouts(session_factory, paypal, fee_percent: float) -> list[int]:
             except Exception:
                 session.rollback()
     return done
+
+
+# PayPal webhook event -> our payout status. Item events carry the final word on the money.
+EVENT_STATUS = {
+    "PAYMENT.PAYOUTSBATCH.SUCCESS": "success",
+    "PAYMENT.PAYOUTSBATCH.DENIED": "denied",
+    "PAYMENT.PAYOUTS-ITEM.SUCCEEDED": "success",
+    "PAYMENT.PAYOUTS-ITEM.UNCLAIMED": "unclaimed",
+    "PAYMENT.PAYOUTS-ITEM.DENIED": "denied",
+    "PAYMENT.PAYOUTS-ITEM.FAILED": "denied",
+    "PAYMENT.PAYOUTS-ITEM.RETURNED": "denied",
+    "PAYMENT.PAYOUTS-ITEM.BLOCKED": "denied",
+    "PAYMENT.PAYOUTS-ITEM.CANCELED": "denied",
+}
+
+
+def batch_id_of(resource: dict) -> str | None:
+    """Batch events nest the id in batch_header; item events carry it directly."""
+    return ((resource.get("batch_header") or {}).get("payout_batch_id")) or resource.get("payout_batch_id")
