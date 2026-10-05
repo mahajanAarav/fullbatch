@@ -82,13 +82,21 @@ const post = <T>(path: string, body: unknown) =>
   })
 
 export interface Me {
-  user: { id: number; name: string; email: string; paypal_verified: boolean; is_dev: boolean } | null
+  user: { id: number; name: string; email: string; paypal_verified: boolean; email_verified: boolean; is_dev: boolean } | null
   shop: { id: number; name: string; verified: boolean } | null
   dev_login: boolean // the server allows the local-only dev sign-in
 }
 
 export const getMe = () => request<Me>('/auth/me')
-export const devLogin = (body: { name: string; email: string; verified: boolean }) => post<Me>('/auth/dev-login', body)
+export const devLogin = (body: { name: string; email: string; verified: boolean; email_verified: boolean }) => post<Me>('/auth/dev-login', body)
+export interface CodeSent {
+  sent?: boolean
+  already_verified?: boolean
+  email?: string // the address, partly hidden
+  dev_code?: string // local development only, when no email is set up
+}
+export const sendEmailCode = () => post<CodeSent>('/auth/email/send', {})
+export const verifyEmailCode = (code: string) => post<Me>('/auth/email/verify', { code })
 export const logout = () => post<{ ok: boolean }>('/auth/logout', {})
 export const createShop = (name: string) => post<{ id: number; name: string; verified: boolean }>('/shop', { name })
 

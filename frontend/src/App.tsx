@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { myOrders } from './api'
 import { AuthProvider, RequireAuth } from './auth'
+import { VerifyEmailDialog } from './components/VerifyEmailDialog'
 import { useAuth } from './authContext'
 import { usePolling } from './hooks'
 import Home from './pages/Home'
@@ -47,6 +49,24 @@ function Nav() {
   )
 }
 
+// A slim reminder under the header while someone's email is unconfirmed.
+function EmailBanner() {
+  const { me } = useAuth()
+  const [open, setOpen] = useState(false)
+  if (!me?.user || me.user.email_verified) return null
+  return (
+    <div className="email-banner" role="status">
+      <div className="wrap email-banner-in">
+        <span>Verify your email to reserve drops or open a shop.</span>
+        <button className="link-button" onClick={() => setOpen(true)}>
+          Verify now
+        </button>
+      </div>
+      <VerifyEmailDialog open={open} onClose={() => setOpen(false)} />
+    </div>
+  )
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -58,6 +78,7 @@ export default function App() {
           <Nav />
         </div>
       </header>
+      <EmailBanner />
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/buy" element={<Navigate to="/" replace />} />

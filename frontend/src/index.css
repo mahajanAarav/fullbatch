@@ -303,6 +303,13 @@ a { color: var(--accent); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .status-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* ---- email verification ---- */
+.email-banner { background: var(--warn-soft); border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); font-size: 0.86rem; }
+.email-banner-in { display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 7px; padding-bottom: 7px; }
+.code-input { font-size: 1.5rem; letter-spacing: 0.4em; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.dev-code { font-weight: 700; letter-spacing: 0.2em; font-size: 1.05rem; }
+.form-actions.between { justify-content: space-between; align-items: center; }
+
 /* ---- toast ---- */
 .toast { position: fixed; left: 20px; bottom: 20px; z-index: 30; max-width: min(440px, calc(100vw - 40px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--ink); color: var(--bg); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); font-size: 0.9rem; animation: rise 0.25s ease; }
 .toast .icon-button { color: var(--bg); opacity: 0.7; }

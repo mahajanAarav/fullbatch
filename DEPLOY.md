@@ -65,6 +65,33 @@ If you would rather not depend on a pinger, Render's paid Starter plan does not 
 - A sandbox **Business** account that PayPal reports as verified can open a shop and create drops.
 - Place an order as a sandbox **Personal** account and approve it. You should land on the "You're in!" page.
 
+## 7. Email (free), for verification codes
+
+Buyers and sellers whose email PayPal has not already confirmed get a 6-digit code by email. Without email set up, the deployed
+site says "Email verification isn't set up yet" to those people (people whose email PayPal confirmed are not affected).
+Any SMTP provider works. Pick one:
+
+**Option A: Gmail (simplest if you have a Gmail account)**
+1. Turn on 2-Step Verification for the Google account (myaccount.google.com, Security).
+2. Create an **App password** (Security, then 2-Step Verification, then App passwords). Copy the 16-character password.
+3. In Render, **add** these variables (they will not be there, because Render drops blank ones):
+
+   | Variable | Value |
+   |---|---|
+   | `SMTP_HOST` | `smtp.gmail.com` |
+   | `SMTP_USER` | your Gmail address |
+   | `SMTP_PASSWORD` | the 16-character app password (no spaces) |
+   | `EMAIL_FROM` | your Gmail address |
+
+   `SMTP_PORT` is already `587`. Gmail allows roughly 500 emails a day, far more than a demo needs.
+
+**Option B: Brevo (free, 300 emails a day, no Gmail needed).** Create an account at brevo.com, verify a sender address,
+create an SMTP key under SMTP & API, then set `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_USER` to the login Brevo shows,
+`SMTP_PASSWORD` to the SMTP key, and `EMAIL_FROM` to your verified sender address.
+
+Save, let Render redeploy, then sign in with an account whose email is unconfirmed and press Reserve to test it.
+Treat the app password / SMTP key like any other secret. It goes only in Render.
+
 ## Notes
 
 - The Docker build has not been run on the author's machine (no Docker installed). The same steps were checked separately:

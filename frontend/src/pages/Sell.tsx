@@ -6,6 +6,7 @@ import { CreateDropDialog, type DropDraft } from '../components/CreateDropDialog
 import { DropCard } from '../components/DropCard'
 import { Modal } from '../components/Modal'
 import { Toast } from '../components/Toast'
+import { VerifyEmailDialog } from '../components/VerifyEmailDialog'
 import { useAuth } from '../authContext'
 import { money } from '../format'
 import { usePolling } from '../hooks'
@@ -23,6 +24,8 @@ export default function Sell() {
 
 function Onboarding() {
   const { me, refresh } = useAuth()
+  const [verifying, setVerifying] = useState(false)
+  const needsEmail = me?.user?.email_verified === false
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -53,15 +56,24 @@ function Onboarding() {
             Your PayPal account isn’t verified yet. You can set up your shop now, but you’ll need a verified account before you can open drops.
           </p>
         )}
+        {needsEmail && (
+          <div className="note">
+            <strong>First, confirm your email.</strong> We’ll send a short code to {me?.user?.email} so buyers and PayPal can always reach you.{' '}
+            <button type="button" className="link-button" onClick={() => setVerifying(true)}>
+              Verify email
+            </button>
+          </div>
+        )}
         <label>
           Shop name
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Maple Street Bakery" maxLength={120} autoFocus />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Maple Street Bakery" maxLength={120} autoFocus={!needsEmail} />
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="button" disabled={!name.trim() || busy}>
+        <button className="button" disabled={!name.trim() || busy || needsEmail}>
           {busy ? 'Creating…' : 'Open shop'}
         </button>
       </form>
+      <VerifyEmailDialog open={verifying} onClose={() => setVerifying(false)} />
     </main>
   )
 }

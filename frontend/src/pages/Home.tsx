@@ -5,6 +5,7 @@ import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { DropCard } from '../components/DropCard'
 import { ReserveDialog } from '../components/ReserveDialog'
+import { VerifyEmailDialog } from '../components/VerifyEmailDialog'
 import { DropGridSkeleton } from '../components/Skeleton'
 import { Toast } from '../components/Toast'
 import { useAuth } from '../authContext'
@@ -33,6 +34,7 @@ export default function Home() {
   const navigate = useNavigate()
   const now = useNow()
   const [reserving, setReserving] = useState<Drop | null>(null)
+  const [verifyFor, setVerifyFor] = useState<Drop | null>(null) // the drop to reserve once their email is confirmed
   const [toast, setToast] = useState<string | null>(null)
   const [chatSync, setChatSync] = useState(0)
   const [search, setSearch] = useState('')
@@ -78,7 +80,7 @@ export default function Home() {
     drops.reload()
     orders.reload()
   }
-  const reserve = (d: Drop) => (user ? setReserving(d) : navigate('/signin?next=/'))
+  const reserve = (d: Drop) => (!user ? navigate('/signin?next=/') : user.email_verified ? setReserving(d) : setVerifyFor(d))
   const dismissTip = () => {
     setTipSeen(true)
     try {
@@ -220,6 +222,7 @@ export default function Home() {
       </AssistantDock>
 
       <ReserveDialog drop={reserving} onClose={() => setReserving(null)} />
+      <VerifyEmailDialog open={verifyFor !== null} onClose={() => setVerifyFor(null)} onVerified={() => setReserving(verifyFor)} />
       <Toast message={toast} onDone={clearToast} />
     </div>
   )

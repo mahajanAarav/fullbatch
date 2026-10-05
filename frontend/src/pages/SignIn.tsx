@@ -54,6 +54,7 @@ function DevSignIn({ onDone }: { onDone: () => Promise<void> }) {
   const [name, setName] = useState('Dev Tester')
   const [email, setEmail] = useState('dev@example.com')
   const [verified, setVerified] = useState(true)
+  const [emailVerified, setEmailVerified] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -62,7 +63,7 @@ function DevSignIn({ onDone }: { onDone: () => Promise<void> }) {
     setBusy(true)
     setError(null)
     try {
-      await devLogin({ name: name.trim(), email: email.trim(), verified })
+      await devLogin({ name: name.trim(), email: email.trim(), verified, email_verified: emailVerified })
       await onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not sign in.')
@@ -87,6 +88,10 @@ function DevSignIn({ onDone }: { onDone: () => Promise<void> }) {
       <label className="check">
         <input type="checkbox" checked={verified} onChange={(e) => setVerified(e.target.checked)} />
         Pretend this is a PayPal-verified account
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={emailVerified} onChange={(e) => setEmailVerified(e.target.checked)} />
+        Email already confirmed (untick to try the email code)
       </label>
       {error && <p className="error" role="alert">{error}</p>}
       <button className="button button-ghost" disabled={busy}>
