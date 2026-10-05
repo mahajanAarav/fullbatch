@@ -167,6 +167,12 @@ def order_view(session: Session, order: Order) -> dict:
 
 # ---- public ----------------------------------------------------------------
 
+@app.get("/config")
+def public_config(settings: Settings = Depends(get_settings)):
+    """What the browser needs to load PayPal's buttons. The client id is public by design; the secret never leaves the server."""
+    return {"paypal_client_id": settings.paypal_client_id or None, "currency": "USD"}
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -440,6 +446,7 @@ def place_order(
         raise HTTPException(502, "Could not start PayPal checkout. Please try again.")
     return {
         "order_id": order.id,
+        "paypal_order_id": order.paypal_order_id,  # what PayPal's in-page buttons need
         "approval_url": approval_url,
         "amount": str(order.amount),
         "reserved_until": order.reserved_until.isoformat(),
@@ -475,6 +482,28 @@ def pay_order(
     except PayPalError:
         raise HTTPException(502, "Could not reach PayPal. Please try again.")
     return {"approval_url": link}
+
+
+@app.post("/orders/{order_id}/confirm")
+def confirm_order(
+    order_id: int,
+    user: User = Depends(require_verified_email),
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+):
+    """
+    The buyer approved inside PayPal's in-page buttons: place the hold now. This does the same
+    thing the redirect return and the webhook do, and it is safe to run after either of them.
+    """
+    order = _own_order(session, user, order_id)
+    if not order.paypal_order_id:
+        raise drops.OrderNotPayable("This order has no PayPal checkout yet.")
+    try:
+        drops.confirm_authorization(session, paypal, order.paypal_order_id)
+    except PayPalError:
+        raise HTTPException(502, "PayPal could not place the hold. Nothing was charged. Please try again.")
+    session.expire_all()
+    return order_view(session, session.get(Order, order_id))
 
 
 @app.post("/orders/{order_id}/cancel")

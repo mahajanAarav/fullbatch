@@ -18,6 +18,8 @@ class Settings:
     frontend_url: str = "http://localhost:5173"
     # From the webhook you create in the PayPal developer dashboard.
     paypal_webhook_id: str = ""
+    # Public by design: the browser needs it to load PayPal's buttons. The secret stays on the server.
+    paypal_client_id: str = ""
     # Deadlines a seller types without a timezone are read in this one.
     timezone: str = "America/New_York"
     # Local-only sign-in that skips PayPal. NEVER enable on the deployed app.
@@ -46,6 +48,7 @@ def get_settings() -> Settings:
         public_api_url=os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/"),
         frontend_url=os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/"),
         paypal_webhook_id=os.getenv("PAYPAL_WEBHOOK_ID", ""),
+        paypal_client_id=os.getenv("PAYPAL_CLIENT_ID", ""),
         timezone=os.getenv("TIMEZONE", "America/New_York"),
         dev_login=os.getenv("DEV_LOGIN", "") == "1",
         smtp_host=os.getenv("SMTP_HOST", ""),

@@ -763,3 +763,24 @@ def test_payouts_endpoint_is_private_to_the_shop_and_lists_the_split(make_client
     assert order["paypal"]["capture_id"].startswith("CAP-")
     assert [s["kind"] for s in order["timeline"]][-1] == "order_captured"
     assert "Ann" not in str(body)
+
+
+# ---- in-page PayPal buttons ---------------------------------------------------------
+
+def test_config_exposes_the_client_id_and_never_the_secret(make_client):
+    app.dependency_overrides[get_settings] = lambda: Settings(paypal_client_id="CID-123")
+    body = make_client().get("/config").json()
+    assert body["paypal_client_id"] == "CID-123" and "secret" not in str(body).lower()
+
+
+def test_in_page_flow_places_the_hold_and_is_owner_only(make_client, paypal):
+    seller = seller_client(make_client)
+    drop = make_drop(seller, quantity_total=10, minimum_units=2).json()
+    ann = buyer_client(make_client, "ann@example.com", "Ann")
+    placed = ann.post(f"/drops/{drop['id']}/orders", json={"quantity": 1}).json()
+    assert placed["paypal_order_id"] == f"PPO-{placed['order_id']}"
+    assert buyer_client(make_client, "eve@example.com", "Eve").post(f"/orders/{placed['order_id']}/confirm").status_code == 404
+    first = ann.post(f"/orders/{placed['order_id']}/confirm")
+    assert first.status_code == 200 and first.json()["status"] == "authorized"
+    assert ann.post(f"/orders/{placed['order_id']}/confirm").status_code in (200, 409)  # a repeat never double-holds
+    assert len([a for a in paypal.request_ids if str(a).startswith("authorize")]) <= 1

@@ -145,6 +145,7 @@ export const cancelDrop = (id: number) => post<{ id: number; status: string }>(`
 
 export interface PlacedOrder {
   order_id: number
+  paypal_order_id: string
   approval_url: string
   amount: string
   reserved_until: string
@@ -275,3 +276,7 @@ export interface PayoutRow {
   updated_at: string
 }
 export const myPayouts = () => request<{ fee_percent: number; payouts: PayoutRow[] }>('/me/payouts')
+
+
+export const getConfig = () => request<{ paypal_client_id: string | null; currency: string }>('/config')
+export const confirmOrder = (id: number) => post<Order>(`/orders/${id}/confirm`, {})

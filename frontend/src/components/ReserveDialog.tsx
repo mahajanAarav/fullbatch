@@ -1,8 +1,10 @@
-import { useState, type FormEvent } from 'react'
-import { placeOrder, type Drop } from '../api'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { cancelOrder, confirmOrder, getConfig, placeOrder, type Drop } from '../api'
 import { useAuth } from '../authContext'
 import { money, whenText } from '../format'
 import { Modal } from './Modal'
+import { PayPalButton } from './PayPalButton'
 
 // Reserve units, then go straight to PayPal to approve the hold. No chat needed.
 export function ReserveDialog({ drop, already = 0, onClose }: { drop: Drop | null; already?: number; onClose: () => void }) {
@@ -22,6 +24,16 @@ function Form({ drop, already, onClose }: { drop: Drop; already: number; onClose
   const [address, setAddress] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const navigate = useNavigate()
+  const [clientId, setClientId] = useState<string | null>(null) // set when PayPal's in-page button can be used
+  const orderId = useRef<number | null>(null) // the reservation made when the PayPal button is pressed
+  const form = useRef({ quantity, method, address })
+  useEffect(() => {
+    form.current = { quantity, method, address }
+  })
+  useEffect(() => {
+    getConfig().then((c) => setClientId(c.paypal_client_id)).catch(() => setClientId(null))
+  }, [])
   const fee = method === 'delivery' ? Number(drop.delivery_fee) : 0
   const total = Number(drop.unit_price) * quantity + fee
   const miles = drop.delivery_radius_km ? (drop.delivery_radius_km / 1.609344).toFixed(1).replace(/\.0$/, '') : null
@@ -38,6 +50,25 @@ function Form({ drop, already, onClose }: { drop: Drop; already: number; onClose
       setError(err instanceof Error ? err.message : 'Could not reserve. Please try again.')
       setBusy(false)
     }
+  }
+
+  // Pressing PayPal's button reserves the units and creates the PayPal order in one go.
+  async function createForButton() {
+    const f = form.current
+    if (f.method === 'delivery' && f.address.trim().length < 5) throw new Error('Add the address to deliver to.')
+    setError(null)
+    const placed = await placeOrder(drop.id, f.quantity, f.method, f.method === 'delivery' ? f.address.trim() : undefined)
+    orderId.current = placed.order_id
+    return placed.paypal_order_id
+  }
+  async function approvedInPage() {
+    if (orderId.current === null) return
+    await confirmOrder(orderId.current)
+    navigate(`/orders/${orderId.current}?status=authorized`)
+  }
+  async function cancelledInPage() {
+    if (orderId.current !== null) await cancelOrder(orderId.current).catch(() => {}) // free the units right away
+    orderId.current = null
   }
 
   return (
@@ -107,14 +138,33 @@ function Form({ drop, already, onClose }: { drop: Drop; already: number; onClose
       </p>
       {error && <p className="error" role="alert">{error}</p>}
 
-      <div className="form-actions">
-        <button type="button" className="button button-ghost" onClick={onClose}>
-          Cancel
-        </button>
-        <button className="button" disabled={busy || (method === 'delivery' && address.trim().length < 5)}>
-          {busy ? 'Reserving…' : 'Continue to PayPal'}
-        </button>
-      </div>
+      {clientId ? (
+        <>
+          <PayPalButton
+            clientId={clientId}
+            currency={drop.currency}
+            create={createForButton}
+            onApproved={approvedInPage}
+            onCancelled={cancelledInPage}
+            onError={(m) => setError(m)}
+            onUnavailable={() => setClientId(null)} // PayPal's script is blocked: fall back to the redirect button
+          />
+          <div className="form-actions">
+            <button type="button" className="button button-ghost" onClick={onClose}>
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="form-actions">
+          <button type="button" className="button button-ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button" disabled={busy || (method === 'delivery' && address.trim().length < 5)}>
+            {busy ? 'Reserving…' : 'Continue to PayPal'}
+          </button>
+        </div>
+      )}
     </form>
   )
 }
