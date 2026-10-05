@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
-import { cancelDrop, createShop, myDrops, type Drop } from '../api'
+import { cancelDrop, createShop, getConfig, myDrops, myPayouts, settleNow, type Drop } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { CreateDropDialog, type DropDraft } from '../components/CreateDropDialog'
@@ -108,6 +108,11 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
   const [viewing, setViewing] = useState<Drop | null>(null) // the drop whose orders are being looked at
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [demo, setDemo] = useState(false) // demo mode shows a "Close now" button on open drops
+  useEffect(() => {
+    getConfig().then((c) => setDemo(c.demo_mode)).catch(() => {})
+  }, [])
+  const { data: impact } = usePolling(myPayouts, 15_000)
   const clearToast = useCallback(() => setToast(null), [])
   const t = totals(drops ?? [])
 
@@ -120,6 +125,16 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
     window.addEventListener(PREPARE_DROP_EVENT, open)
     return () => window.removeEventListener(PREPARE_DROP_EVENT, open)
   }, [])
+
+  async function closeNow(d: Drop) {
+    try {
+      const r = await settleNow(d.id)
+      setToast(r.status === 'filled' ? `“${d.item_name}” filled. Every hold was charged and your payout is on its way.` : `“${d.item_name}” missed its minimum. Every hold was released.`)
+      reload()
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : 'Could not close the drop.')
+    }
+  }
 
   async function confirmCancel() {
     if (!cancelling) return
@@ -179,6 +194,9 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           <Kpi label="Units approved" value={String(t.approvedUnits)} hint="across open drops" />
           <Kpi label="On hold" value={money(t.onHold)} hint="not charged yet" />
           <Kpi label="Collected" value={money(t.collected)} hint="from filled drops" />
+          {impact && impact.waste_avoided_units > 0 && (
+            <Kpi label="Waste avoided" value={`${impact.waste_avoided_units} ${impact.waste_avoided_units === 1 ? 'unit' : 'units'}`} hint={`${money(impact.holds_released)} never charged, nothing made`} />
+          )}
         </section>
 
         <PayoutsPanel />
@@ -202,6 +220,11 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
                   <button className="button button-ghost" onClick={() => setViewing(d)}>
                     Orders
                   </button>
+                  {demo && d.status === 'open' && (
+                    <button className="button button-ghost" onClick={() => closeNow(d)} title="Demo mode: settle this drop right now">
+                      Close now (demo)
+                    </button>
+                  )}
                   {d.status === 'open' && (
                     <button className="button button-ghost" onClick={() => { setCancelError(null); setCancelling(d) }}>
                       Cancel drop

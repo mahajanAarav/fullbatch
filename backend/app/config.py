@@ -34,6 +34,8 @@ class Settings:
     geo_countries: str = "us"
     # What fullbatch keeps from each filled drop before paying the seller the rest.
     platform_fee_percent: float = 5.0
+    # Shows a "Close now" button so a demo does not have to wait for a real deadline. Sandbox only.
+    demo_mode: bool = False
 
     @property
     def cookie_secure(self) -> bool:
@@ -57,5 +59,6 @@ def get_settings() -> Settings:
         smtp_password=os.getenv("SMTP_PASSWORD", ""),
         email_from=os.getenv("EMAIL_FROM", ""),
         geo_countries=os.getenv("GEO_COUNTRIES", "us") or "us",
+        demo_mode=os.getenv("DEMO_MODE", "") == "1",
         platform_fee_percent=float(os.getenv("PLATFORM_FEE_PERCENT", "5") or 5),
     )

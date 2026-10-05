@@ -784,3 +784,32 @@ def test_in_page_flow_places_the_hold_and_is_owner_only(make_client, paypal):
     assert first.status_code == 200 and first.json()["status"] == "authorized"
     assert ann.post(f"/orders/{placed['order_id']}/confirm").status_code in (200, 409)  # a repeat never double-holds
     assert len([a for a in paypal.request_ids if str(a).startswith("authorize")]) <= 1
+
+
+# ---- demo tools ---------------------------------------------------------------------
+
+def test_settle_now_is_off_unless_demo_mode(make_client):
+    seller = seller_client(make_client)
+    drop = make_drop(seller, quantity_total=10, minimum_units=2).json()
+    assert seller.post(f"/drops/{drop['id']}/settle-now").status_code == 404
+
+
+def test_settle_now_captures_pays_and_only_for_the_owner(make_client, paypal):
+    app.dependency_overrides[get_settings] = lambda: Settings(demo_mode=True, paypal_webhook_id="WH-TEST", dev_login=True, public_api_url="http://api.test", frontend_url="http://app.test")
+    seller = seller_client(make_client)
+    drop = make_drop(seller, quantity_total=10, minimum_units=2).json()
+    ann = buyer_client(make_client, "ann@example.com", "Ann")
+    order_id = paid_order(ann, drop["id"], 2)
+    assert ann.post(f"/drops/{drop['id']}/settle-now").status_code == 403  # buyers cannot
+    assert seller.post(f"/drops/{drop['id']}/settle-now").json()["status"] == "filled"
+    assert ann.get(f"/orders/{order_id}").json()["status"] == "captured"
+    assert seller.post(f"/drops/{drop['id']}/settle-now").status_code == 409  # already closed
+
+
+def test_missed_drop_counts_as_waste_avoided(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    drop = make_drop(seller, quantity_total=10, minimum_units=5).json()
+    paid_order(buyer_client(make_client, "ann@example.com", "Ann"), drop["id"], 2)
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))
+    body = seller.get("/me/payouts").json()
+    assert body["waste_avoided_units"] == 2 and body["holds_released"] == "18.00"

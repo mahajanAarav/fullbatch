@@ -275,8 +275,10 @@ export interface PayoutRow {
   batch_id: string | null
   updated_at: string
 }
-export const myPayouts = () => request<{ fee_percent: number; payouts: PayoutRow[] }>('/me/payouts')
+export const myPayouts = () =>
+  request<{ fee_percent: number; waste_avoided_units: number; holds_released: string; payouts: PayoutRow[] }>('/me/payouts')
+export const settleNow = (id: number) => post<{ id: number; status: string }>(`/drops/${id}/settle-now`, {})
 
 
-export const getConfig = () => request<{ paypal_client_id: string | null; currency: string }>('/config')
+export const getConfig = () => request<{ paypal_client_id: string | null; currency: string; demo_mode: boolean }>('/config')
 export const confirmOrder = (id: number) => post<Order>(`/orders/${id}/confirm`, {})

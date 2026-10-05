@@ -13,7 +13,7 @@ name a different seller or buyer.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 
@@ -170,7 +170,7 @@ def order_view(session: Session, order: Order) -> dict:
 @app.get("/config")
 def public_config(settings: Settings = Depends(get_settings)):
     """What the browser needs to load PayPal's buttons. The client id is public by design; the secret never leaves the server."""
-    return {"paypal_client_id": settings.paypal_client_id or None, "currency": "USD"}
+    return {"paypal_client_id": settings.paypal_client_id or None, "currency": "USD", "demo_mode": settings.demo_mode}
 
 
 @app.get("/health")
@@ -339,7 +339,15 @@ def my_payouts(
         select(Payout, Drop.item_name).join(Drop, Drop.id == Payout.drop_id)
         .where(Payout.seller_id == shop.id).order_by(Payout.id.desc())
     ).all()
+    # The point of a drop: when one misses its minimum, nothing is made or charged. Count what that saved.
+    saved_units, released = session.execute(
+        select(func.coalesce(func.sum(Order.quantity), 0), func.coalesce(func.sum(Order.amount), 0))
+        .join(Drop, Drop.id == Order.drop_id)
+        .where(Drop.seller_id == shop.id, Order.status == OrderStatus.VOIDED)
+    ).one()
     return {
+        "waste_avoided_units": int(saved_units),
+        "holds_released": str(released),
         "fee_percent": settings.platform_fee_percent,
         "payouts": [{
             "drop_id": p.drop_id, "item_name": name, "gross": str(p.gross), "fee": str(p.fee), "net": str(p.net),
@@ -405,6 +413,31 @@ def cancel_drop(
 ):
     my_drop(session, shop, drop_id)  # only the owner can cancel
     status = drops.cancel_drop(session, paypal, drop_id)
+    return {"id": drop_id, "status": status.value}
+
+
+@app.post("/drops/{drop_id}/settle-now")
+def settle_now(
+    drop_id: int,
+    shop: Seller = Depends(require_shop),
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Demo only (DEMO_MODE=1): move the deadline to now and settle, so a live demo shows the capture or
+    release and the payout without waiting days. It runs the exact same settlement as the timer.
+    """
+    if not settings.demo_mode:
+        raise HTTPException(404, "Not found.")
+    drop = my_drop(session, shop, drop_id)
+    if drop.status.value != "open":
+        raise drops.DropNotOpen("This drop is already closed.")
+    drop.deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+    session.commit()
+    status = drops.settle_drop(session, paypal, drop_id)
+    if status.value == "filled":
+        payouts.pay_drop(session, paypal, drop_id, settings.platform_fee_percent)  # pay the seller right away
     return {"id": drop_id, "status": status.value}
 
 
