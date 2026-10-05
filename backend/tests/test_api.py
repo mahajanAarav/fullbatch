@@ -611,3 +611,79 @@ def test_analytics_never_carries_an_address(make_client):
     seller = seller_client(make_client)
     seller.post("/drops", json=drop_body(**located()))
     assert "350 5th" not in seller.get("/me/analytics").text
+
+
+# ---- picking an order back up: pay, cancel, and the per-person limit -------------------------------
+
+def reserve_only(buyer, drop_id, quantity=1):
+    return buyer.post(f"/drops/{drop_id}/orders", json={"quantity": quantity}).json()
+
+
+def test_an_unfinished_order_can_be_paid_from_where_it_was_left(make_client):
+    seller, buyer = seller_client(make_client), buyer_client(make_client)
+    drop = make_drop(seller).json()
+    placed = reserve_only(buyer, drop["id"], 2)
+    view = buyer.get(f"/orders/{placed['order_id']}").json()
+    assert view["can_pay"] is True and view["status"] == "reserved"
+
+    again = buyer.post(f"/orders/{placed['order_id']}/pay")
+    assert again.status_code == 200 and again.json()["approval_url"] == placed["approval_url"]    # the same PayPal order
+    assert buyer.post(f"/orders/{placed['order_id']}/pay").json()["approval_url"] == placed["approval_url"]
+
+
+def test_paying_is_refused_once_the_hold_exists_or_the_time_is_up(make_client, session_factory):
+    seller, buyer = seller_client(make_client), buyer_client(make_client)
+    drop = make_drop(seller).json()
+    approved = paid_order(buyer, drop["id"], 1)
+    assert buyer.get(f"/orders/{approved}").json()["can_pay"] is False
+    assert buyer.post(f"/orders/{approved}/pay").status_code == 409                 # already approved: nothing left to pay
+
+    stale = reserve_only(buyer, drop["id"], 1)
+    with session_factory() as s:
+        drops.expire_stale_reservations(s, now=datetime.now(timezone.utc) + timedelta(hours=1))
+    assert buyer.get(f"/orders/{stale['order_id']}").json()["can_pay"] is False
+    r = buyer.post(f"/orders/{stale['order_id']}/pay")
+    assert r.status_code == 409 and "expired" in r.json()["error"]
+
+
+def test_nobody_can_pay_or_cancel_someone_elses_order(make_client):
+    drop = make_drop(seller_client(make_client)).json()
+    ann, ben = buyer_client(make_client, "ann@example.com", "Ann"), buyer_client(make_client, "ben@example.com", "Ben")
+    placed = reserve_only(ann, drop["id"])
+    for action in ("pay", "cancel"):
+        assert ben.post(f"/orders/{placed['order_id']}/{action}").status_code == 404
+        assert make_client().post(f"/orders/{placed['order_id']}/{action}").status_code == 401
+    assert ann.get(f"/orders/{placed['order_id']}").json()["status"] == "reserved"         # untouched
+
+
+def test_a_paypal_outage_while_resuming_is_a_clean_502(make_client, paypal):
+    drop = make_drop(seller_client(make_client)).json()
+    buyer = buyer_client(make_client)
+    placed = reserve_only(buyer, drop["id"])
+    paypal.fail_create = True
+    assert buyer.post(f"/orders/{placed['order_id']}/pay").status_code == 502
+
+
+def test_cancelling_a_reservation_frees_the_stock_but_an_approved_order_stays(make_client):
+    seller, buyer = seller_client(make_client), buyer_client(make_client)
+    drop = make_drop(seller, max_per_buyer=4).json()
+    held = reserve_only(buyer, drop["id"], 3)
+    assert make_client().get(f"/drops/{drop['id']}").json()["units_remaining"] == 7
+    cancelled = buyer.post(f"/orders/{held['order_id']}/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["status"] == "expired" and cancelled.json()["can_pay"] is False
+    assert make_client().get(f"/drops/{drop['id']}").json()["units_remaining"] == 10
+
+    approved = paid_order(buyer, drop["id"], 1)
+    r = buyer.post(f"/orders/{approved}/cancel")
+    assert r.status_code == 409 and buyer.get(f"/orders/{approved}").json()["status"] == "authorized"
+
+
+def test_the_per_person_limit_holds_across_orders_through_the_api(make_client):
+    drop = make_drop(seller_client(make_client), max_per_buyer=3).json()
+    buyer = buyer_client(make_client)
+    assert buyer.post(f"/drops/{drop['id']}/orders", json={"quantity": 2}).status_code == 201
+    r = buyer.post(f"/drops/{drop['id']}/orders", json={"quantity": 2})
+    assert r.status_code == 422 and "already have 2" in r.json()["error"] and "1 more" in r.json()["error"]
+    assert buyer.post(f"/drops/{drop['id']}/orders", json={"quantity": 1}).status_code == 201
+    other = buyer_client(make_client, "other@example.com", "Other")
+    assert other.post(f"/drops/{drop['id']}/orders", json={"quantity": 3}).status_code == 201

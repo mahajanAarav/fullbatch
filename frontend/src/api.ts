@@ -34,6 +34,7 @@ export type OrderStatus = 'reserved' | 'authorized' | 'captured' | 'voided' | 'e
 
 export interface Order {
   id: number
+  can_pay: boolean // reserved and still within its time to pay
   status: OrderStatus
   quantity: number
   amount: string
@@ -238,3 +239,8 @@ export interface Recommendation {
   based_on: number[]
 }
 export const myPlan = () => request<{ recommendation: Recommendation; reports: PlanReport[] }>('/me/plan')
+
+// Pick up an unfinished checkout: the PayPal link for a reservation that is still held.
+export const payOrder = (id: number) => post<{ approval_url: string }>(`/orders/${id}/pay`, {})
+// Give up a reservation that hasn't been paid for.
+export const cancelOrder = (id: number) => post<Order>(`/orders/${id}/cancel`, {})

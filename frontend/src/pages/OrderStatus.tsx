@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { getOrder } from '../api'
+import { cancelOrder, getOrder, payOrder } from '../api'
 import { money, timeLeft, whenText } from '../format'
 import { useNow, usePolling } from '../hooks'
 
@@ -10,7 +11,7 @@ export default function OrderStatus() {
   const hint = query.get('status') // what the server just saw: authorized | expired | cancelled | error
   const orderId = Number(id)
   const now = useNow(1000 * 20)
-  const { data: order, error } = usePolling(() => getOrder(orderId), 10_000, Number.isInteger(orderId))
+  const { data: order, error, reload } = usePolling(() => getOrder(orderId), 10_000, Number.isInteger(orderId))
 
   if (!id || !Number.isInteger(orderId) || hint === 'error') {
     return (
@@ -55,10 +56,15 @@ export default function OrderStatus() {
       )
     case 'reserved':
       return (
-        <Message tone="neutral" title={hint === 'cancelled' ? 'Order cancelled' : 'Waiting for approval'} order={order}>
-          {hint === 'cancelled'
-            ? 'You backed out on PayPal, so your reservation was released.'
-            : `Your reservation is held until ${whenText(order.reserved_until)}. Finish approving on PayPal before then. If you closed the PayPal page, just reserve again.`}
+        <Message
+          tone="neutral"
+          title={hint === 'cancelled' && !order.can_pay ? 'Order cancelled' : order.can_pay ? 'Finish your payment' : 'Reservation ended'}
+          order={order}
+          actions={order.can_pay ? <PayActions order={order} now={now} onChanged={reload} /> : undefined}
+        >
+          {order.can_pay
+            ? `This is your order, held for you until ${whenText(order.reserved_until)} (${timeLeft(order.reserved_until, now)}). Approve it on PayPal to lock it in. PayPal only places a hold, and you’re charged only if the drop reaches its minimum.`
+            : 'This reservation is no longer held, so nothing was charged. You can reserve again from the drop.'}
         </Message>
       )
     case 'expired':
@@ -82,16 +88,19 @@ function Message({
   tone,
   title,
   order,
+  actions,
   children,
 }: {
   tone: 'good' | 'bad' | 'neutral'
   title: string
   order?: Awaited<ReturnType<typeof getOrder>>
+  actions?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <main className="narrow">
       <div className={`card status status-${tone}`}>
+        {order && <p className="eyebrow">Your order #{order.id}</p>}
         <h1>{title}</h1>
         <p>{children}</p>
         {order && <Where order={order} />}
@@ -107,8 +116,9 @@ function Message({
             <dd>{whenText(order.deadline)}</dd>
           </dl>
         )}
+        {actions}
         <div className="status-actions">
-          <Link to="/orders" className="button">
+          <Link to="/orders" className={actions ? 'button button-ghost' : 'button'}>
             View my orders
           </Link>
           <Link to="/" className="button button-ghost">
@@ -151,4 +161,48 @@ function Where({ order }: { order: Awaited<ReturnType<typeof getOrder>> }) {
     )
   }
   return null
+}
+
+
+// Resume paying for a reservation that is still held, or give it up.
+function PayActions({ order, now, onChanged }: { order: Awaited<ReturnType<typeof getOrder>>; now: number; onChanged: () => void }) {
+  const [busy, setBusy] = useState<'pay' | 'cancel' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const left = new Date(order.reserved_until).getTime() - now
+
+  async function pay() {
+    setBusy('pay')
+    setError(null)
+    try {
+      window.location.assign((await payOrder(order.id)).approval_url) // off to PayPal; it returns here
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open PayPal. Please try again.')
+      setBusy(null)
+    }
+  }
+  async function cancel() {
+    if (!window.confirm('Cancel this reservation? The units go back to other buyers.')) return
+    setBusy('cancel')
+    setError(null)
+    try {
+      await cancelOrder(order.id)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not cancel.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="pay-actions">
+      <button className="button button-paypal" onClick={pay} disabled={busy !== null || left <= 0}>
+        {busy === 'pay' ? 'Opening PayPal…' : `Complete payment on PayPal · ${money(order.amount, order.currency)}`}
+      </button>
+      <button className="link-button small" onClick={cancel} disabled={busy !== null}>
+        {busy === 'cancel' ? 'Cancelling…' : 'Cancel reservation'}
+      </button>
+      {error && <p className="error" role="alert">{error}</p>}
+    </div>
+  )
 }

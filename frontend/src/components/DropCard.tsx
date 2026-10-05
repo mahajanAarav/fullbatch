@@ -44,12 +44,14 @@ export function DropCard({
   showShop = true,
   distance = null,
   deliversToYou = null,
+  yourOrder,
 }: {
   drop: Drop
   action?: ReactNode
   showShop?: boolean
   distance?: number | null // miles from the viewer, when they've shared a location
   deliversToYou?: boolean | null
+  yourOrder?: ReactNode // shown when the viewer already has an order on this drop
 }) {
   const now = useNow()
   const total = drop.quantity_total
@@ -123,6 +125,7 @@ export function DropCard({
           <p className="muted small">{CLOSED_NOTE[drop.status as Exclude<Drop['status'], 'open'>]}</p>
         )}
 
+        {yourOrder && <div className="your-order">{yourOrder}</div>}
         {action && <footer className="drop-action">{action}</footer>}
       </div>
     </article>

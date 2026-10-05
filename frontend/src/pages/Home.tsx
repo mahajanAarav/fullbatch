@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { listOpenDrops, myOrders, type Drop, type Order } from '../api'
+import { listOpenDrops, myOrders, payOrder, type Drop, type Order } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { DropCard } from '../components/DropCard'
@@ -90,6 +90,19 @@ export default function Home() {
     }
     return [...list].sort(by[location || sort !== 'nearest' ? sort : 'ending'])
   }, [drops.data, search, sort, within, location, distanceOf])
+
+  // What this person already has on each drop: their units, and any order they could still finish paying for.
+  const mine = useMemo(() => {
+    const byDrop = new Map<number, { units: number; orders: Order[] }>()
+    for (const o of orders.data ?? []) {
+      if (!['reserved', 'authorized', 'captured'].includes(o.status)) continue
+      const entry = byDrop.get(o.drop_id) ?? { units: 0, orders: [] }
+      entry.units += o.quantity
+      entry.orders.push(o)
+      byDrop.set(o.drop_id, entry)
+    }
+    return byDrop
+  }, [orders.data])
 
   const refresh = () => {
     drops.reload()
@@ -189,9 +202,22 @@ export default function Home() {
               deliversToYou={
                 location && d.offers_delivery && d.delivery_radius_km !== null && distanceOf(d) !== null ? distanceOf(d)! * KM_PER_MILE <= d.delivery_radius_km : null
               }
+              yourOrder={mine.has(d.id) ? <YourOrder entry={mine.get(d.id)!} /> : undefined}
               action={
-                <button className="button button-block" disabled={d.units_remaining === 0} onClick={() => reserve(d)}>
-                  {d.units_remaining === 0 ? 'Sold out' : user ? 'Reserve' : 'Sign in to reserve'}
+                <button
+                  className="button button-block"
+                  disabled={d.units_remaining === 0 || (mine.get(d.id)?.units ?? 0) >= d.max_per_buyer}
+                  onClick={() => reserve(d)}
+                >
+                  {d.units_remaining === 0
+                    ? 'Sold out'
+                    : (mine.get(d.id)?.units ?? 0) >= d.max_per_buyer
+                      ? 'You’ve reached the limit'
+                      : !user
+                        ? 'Sign in to reserve'
+                        : mine.has(d.id)
+                          ? 'Reserve more'
+                          : 'Reserve'}
                 </button>
               }
             />
@@ -256,7 +282,7 @@ export default function Home() {
         )}
       </AssistantDock>
 
-      <ReserveDialog drop={reserving} onClose={() => setReserving(null)} />
+      <ReserveDialog drop={reserving} already={reserving ? (mine.get(reserving.id)?.units ?? 0) : 0} onClose={() => setReserving(null)} />
       <VerifyEmailDialog open={verifyFor !== null} onClose={() => setVerifyFor(null)} onVerified={() => setReserving(verifyFor)} />
       <Toast message={toast} onDone={clearToast} />
     </div>
@@ -329,5 +355,43 @@ function LocationBar({
       </button>
       {error && <span className="error small">{error}</span>}
     </form>
+  )
+}
+
+
+// "This is your order": shown on a drop you already have units in, with a way to finish paying if you haven't.
+function YourOrder({ entry }: { entry: { units: number; orders: Order[] } }) {
+  const unpaid = entry.orders.find((o) => o.can_pay)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const state = entry.orders.every((o) => o.status === 'captured') ? 'charged' : unpaid ? 'payment not finished' : 'on hold, not charged yet'
+
+  async function pay() {
+    if (!unpaid) return
+    setBusy(true)
+    setError(null)
+    try {
+      window.location.assign((await payOrder(unpaid.id)).approval_url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open PayPal.')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="your-order-row">
+        <span>
+          <strong>Your order:</strong> {entry.units} {entry.units === 1 ? 'unit' : 'units'} · {state}
+        </span>
+        <Link to={`/orders/${(unpaid ?? entry.orders[0]).id}`}>View</Link>
+      </div>
+      {unpaid && (
+        <button className="button button-paypal button-block" onClick={pay} disabled={busy}>
+          {busy ? 'Opening PayPal…' : 'Complete payment'}
+        </button>
+      )}
+      {error && <span className="error small">{error}</span>}
+    </>
   )
 }

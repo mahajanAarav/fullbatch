@@ -287,3 +287,59 @@ def test_the_hold_confirmation_tells_the_buyer_where_to_collect_or_where_it_is_g
         drops.confirm_authorization(session, pp, f"PPO-{o.id}")
     assert "Pickup address: 350 5th Ave, New York, NY. Ring the side bell" in notes_for(session, "chat-pick")[0]
     assert "delivered to 10 Some St" in notes_for(session, "c")[0]
+
+
+# ---- the limit is per person, not per order -----------------------------------------------------
+
+def order_for(session, drop, user_id, qty, session_id="c"):
+    return drops.reserve_stock(session, drop.id, "A", "a@x.co", session_id, qty, buyer_user_id=user_id)
+
+
+def test_several_orders_cannot_add_up_past_the_per_person_limit(session, seller, buyer, make_drop):
+    d = make_drop(max_per_buyer=4)
+    order_for(session, d, buyer.id, 3)
+    with pytest.raises(drops.InvalidOrder, match=r"already have 3\. You can add 1 more"):
+        order_for(session, d, buyer.id, 2)
+    order_for(session, d, buyer.id, 1)                                   # exactly up to the limit is fine
+    with pytest.raises(drops.InvalidOrder, match="reached it"):
+        order_for(session, d, buyer.id, 1)
+    assert drops.units_taken(session, d.id) == 4
+
+
+def test_the_limit_follows_the_person_not_the_browser_session(session, seller, buyer, make_drop):
+    d = make_drop(max_per_buyer=2)
+    order_for(session, d, buyer.id, 2, session_id="phone")
+    with pytest.raises(drops.InvalidOrder):
+        order_for(session, d, buyer.id, 1, session_id="laptop")
+
+
+def test_other_people_have_their_own_allowance(session, seller, buyer, make_drop):
+    from app.models import User
+
+    other = User(name="Other", email="other@example.com", email_verified=True)
+    session.add(other)
+    session.commit()
+    d = make_drop(max_per_buyer=2)
+    order_for(session, d, buyer.id, 2)
+    assert order_for(session, d, other.id, 2).quantity == 2
+
+
+def test_giving_up_a_reservation_gives_the_allowance_back(session, seller, buyer, make_drop):
+    d = make_drop(max_per_buyer=2)
+    first = order_for(session, d, buyer.id, 2)
+    drops.release_reservation(session, first.id)
+    assert order_for(session, d, buyer.id, 2).quantity == 2
+
+
+def test_expired_and_released_orders_do_not_count_against_the_limit(session, seller, buyer, make_drop):
+    from datetime import timedelta
+
+    d = make_drop(max_per_buyer=2)
+    held = order_for(session, d, buyer.id, 2)
+    drops.expire_stale_reservations(session, now=held.reserved_until + timedelta(seconds=1))
+    assert order_for(session, d, buyer.id, 2).quantity == 2
+
+
+def test_an_order_with_no_account_is_limited_per_order_only(session, seller, make_drop):
+    d = make_drop(max_per_buyer=2)
+    assert order_for(session, d, None, 2).quantity == 2 and order_for(session, d, None, 2).quantity == 2

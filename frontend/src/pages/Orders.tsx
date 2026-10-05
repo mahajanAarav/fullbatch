@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { myOrders, type Order } from '../api'
+import { myOrders, payOrder, type Order } from '../api'
 import { money, whenText } from '../format'
 import { usePolling } from '../hooks'
 
@@ -48,13 +49,28 @@ export default function Orders() {
 }
 
 function OrderGroup({ title, orders }: { title: string; orders: Order[] }) {
+  const [busy, setBusy] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function pay(id: number) {
+    setBusy(id)
+    setError(null)
+    try {
+      window.location.assign((await payOrder(id)).approval_url) // off to PayPal; it returns to the order page
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open PayPal. Please try again.')
+      setBusy(null)
+    }
+  }
+
   return (
     <section className="section">
       <h2>{title}</h2>
+      {error && <p className="error">{error}</p>}
       <div className="list card">
         {orders.map((o) => (
-          <Link key={o.id} to={`/orders/${o.id}`} className="list-row order-row-rich">
-            <div>
+          <div key={o.id} className="list-row order-row-rich">
+            <Link to={`/orders/${o.id}`} className="order-link">
               <strong>
                 {o.quantity} × {o.item_name}
               </strong>
@@ -62,9 +78,16 @@ function OrderGroup({ title, orders }: { title: string; orders: Order[] }) {
               <span className="muted small">
                 {STATUS[o.status].hint} Drop closes {whenText(o.deadline)}.
               </span>
+            </Link>
+            <div className="order-side">
+              <strong>{money(o.amount, o.currency)}</strong>
+              {o.can_pay && (
+                <button className="button button-small" onClick={() => pay(o.id)} disabled={busy !== null}>
+                  {busy === o.id ? 'Opening…' : 'Pay now'}
+                </button>
+              )}
             </div>
-            <strong>{money(o.amount, o.currency)}</strong>
-          </Link>
+          </div>
         ))}
       </div>
     </section>

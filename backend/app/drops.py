@@ -248,6 +248,23 @@ def reserve_stock(
         if quantity > remaining:
             raise SoldOut(remaining)
 
+        if buyer_user_id is not None:  # the limit is per person, across all their orders on this drop
+            already = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(Order.quantity), 0)).where(
+                        Order.drop_id == drop_id,
+                        Order.buyer_user_id == buyer_user_id,
+                        Order.status.in_(STOCK_HOLDING_STATUSES),
+                    )
+                )
+            )
+            if already + quantity > drop.max_per_buyer:
+                left = max(drop.max_per_buyer - already, 0)
+                raise InvalidOrder(
+                    f"The limit is {drop.max_per_buyer} per person, and you already have {already}. "
+                    + (f"You can add {left} more." if left else "You've reached it.")
+                )
+
         fee = Decimal("0")
         if fulfillment == "pickup":
             if not drop.offers_pickup:

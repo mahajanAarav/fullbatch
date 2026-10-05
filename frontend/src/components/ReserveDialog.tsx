@@ -5,17 +5,18 @@ import { money, whenText } from '../format'
 import { Modal } from './Modal'
 
 // Reserve units, then go straight to PayPal to approve the hold. No chat needed.
-export function ReserveDialog({ drop, onClose }: { drop: Drop | null; onClose: () => void }) {
+export function ReserveDialog({ drop, already = 0, onClose }: { drop: Drop | null; already?: number; onClose: () => void }) {
   return (
     <Modal open={drop !== null} onClose={onClose} title={drop ? `Reserve ${drop.item_name}` : ''}>
-      {drop && <Form drop={drop} onClose={onClose} />}
+      {drop && <Form drop={drop} already={already} onClose={onClose} />}
     </Modal>
   )
 }
 
-function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
+function Form({ drop, already, onClose }: { drop: Drop; already: number; onClose: () => void }) {
   const { me } = useAuth()
-  const maxQty = Math.max(1, Math.min(drop.max_per_buyer, drop.units_remaining))
+  const allowance = Math.max(drop.max_per_buyer - already, 0) // the limit is per person, across all their orders
+  const maxQty = Math.max(1, Math.min(allowance, drop.units_remaining))
   const [quantity, setQuantity] = useState(1)
   const [method, setMethod] = useState<'pickup' | 'delivery'>(drop.offers_pickup ? 'pickup' : 'delivery')
   const [address, setAddress] = useState('')
@@ -87,6 +88,12 @@ function Form({ drop, onClose }: { drop: Drop; onClose: () => void }) {
           />
           <span className="muted small">{miles ? `This seller delivers within ${miles} miles of ${drop.area ?? 'their location'}.` : ''}</span>
         </label>
+      )}
+
+      {already > 0 && (
+        <p className="muted small">
+          You already have {already} on this drop. The limit is {drop.max_per_buyer} per person.
+        </p>
       )}
 
       {me?.user && (

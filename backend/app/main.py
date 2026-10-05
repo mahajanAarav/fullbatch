@@ -13,6 +13,7 @@ name a different seller or buyer.
 """
 
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
 
@@ -30,7 +31,7 @@ from app.config import Settings, get_settings
 from app.db import get_session
 from app.deps import get_geocoder, get_llm, get_paypal
 from app.llm import LLMError
-from app.models import ChatMessage, Drop, Order, Seller, User
+from app.models import ChatMessage, Drop, Order, OrderStatus, Seller, User
 from app.paypal import PayPalError
 from app.ratelimit import RateLimiter
 
@@ -134,6 +135,7 @@ def order_view(session: Session, order: Order) -> dict:
     progress = drops.drop_progress(session, drop)
     approved = order.status.value in APPROVED
     return {
+        "can_pay": order.status == OrderStatus.RESERVED and order.reserved_until > datetime.now(timezone.utc),
         "fulfillment": order.fulfillment,
         "delivery_fee": str(order.delivery_fee),
         "area": drop.pickup_area,
@@ -380,6 +382,48 @@ def place_order(
         "amount": str(order.amount),
         "reserved_until": order.reserved_until.isoformat(),
     }
+
+
+def _own_order(session: Session, user: User, order_id: int) -> Order:
+    order = session.get(Order, order_id)
+    if order is None or order.buyer_user_id != user.id:  # other people's orders look like missing ones
+        raise drops.OrderNotFound(f"No order with id {order_id}.")
+    return order
+
+
+@app.post("/orders/{order_id}/pay")
+def pay_order(
+    order_id: int,
+    user: User = Depends(require_verified_email),
+    session: Session = Depends(get_session),
+    paypal=Depends(get_paypal),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Pick up an unfinished checkout: the PayPal approval link for a reservation that is still held.
+    Asking twice returns the same PayPal order, because the request id is fixed.
+    """
+    order = _own_order(session, user, order_id)
+    try:
+        link = drops.start_checkout(
+            session, paypal, order.id,
+            return_url=f"{settings.public_api_url}/paypal/return",
+            cancel_url=f"{settings.public_api_url}/paypal/cancel",
+        )
+    except PayPalError:
+        raise HTTPException(502, "Could not reach PayPal. Please try again.")
+    return {"approval_url": link}
+
+
+@app.post("/orders/{order_id}/cancel")
+def cancel_order(order_id: int, user: User = Depends(require_user), session: Session = Depends(get_session)):
+    """Give up a reservation that has not been paid for yet. Approved orders are a commitment and stay."""
+    order = _own_order(session, user, order_id)
+    if order.status != OrderStatus.RESERVED:
+        raise drops.OrderNotPayable("Only a reservation you haven't paid for yet can be cancelled.")
+    drops.release_reservation(session, order.id, reason="buyer_cancelled")
+    session.refresh(order)
+    return order_view(session, order)
 
 
 @app.get("/me/orders")
