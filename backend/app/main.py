@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import agent, auth, drops, planner
+from app import agent, auth, drops, planner, studio_ai
 from app.auth import buyer_chat_id, require_shop, require_user
 from app.config import Settings, get_settings
 from app.db import get_session
@@ -41,6 +41,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 app.include_router(auth.router)
+app.include_router(studio_ai.router)
 
 
 # ---- turn drop-engine errors into proper HTTP answers ----------------------

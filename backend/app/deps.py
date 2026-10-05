@@ -17,3 +17,14 @@ def get_llm():
     from app.llm_factory import from_env as llm_from_env
 
     return llm_from_env()
+
+
+@lru_cache
+def get_studio_llm():
+    """
+    The model behind AG Studio's assistant. Groq goes first here because Studio describes its tools with
+    richer JSON Schema than Gemini accepts (Gemini would need parts of the schema stripped).
+    """
+    from app.llm_factory import from_env as llm_from_env
+
+    return llm_from_env(order=("groq", "gemini"))
