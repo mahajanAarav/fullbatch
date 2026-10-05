@@ -214,3 +214,32 @@ def test_login_profile_request_carries_the_users_own_token():
 
     assert make_client(handler).get_login_profile("USER-TOKEN")["payer_id"] == "P"
     assert seen[0].headers["authorization"] == "Bearer USER-TOKEN" and "paypalv1.1" in str(seen[0].url)
+
+
+def test_the_profile_falls_back_to_the_other_format_when_the_first_has_no_email():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.params.get("schema"))
+        if request.url.params.get("schema") == "paypalv1.1":
+            return httpx.Response(200, json={"payer_id": "P1", "name": "No Email"})        # no email in this format
+        return httpx.Response(200, json={"user_id": "https://paypal/u/P1", "email": "a@b.co", "email_verified": True, "name": "A B"})
+
+    out = make_client(handler).get_login_profile("tok")
+    assert seen == ["paypalv1.1", "openid"] and out["email"] == "a@b.co" and out["payer_id"] == "P1"
+
+
+def test_the_profile_falls_back_when_the_first_format_is_refused():
+    def handler(request):
+        if request.url.params.get("schema") == "paypalv1.1":
+            return httpx.Response(403, text="insufficient_scope")
+        return httpx.Response(200, json={"payer_id": "P1", "email": "a@b.co", "name": "A"})
+
+    assert make_client(handler).get_login_profile("tok")["email"] == "a@b.co"
+
+
+def test_when_both_formats_fail_the_error_names_what_was_missing_not_the_values():
+    client = make_client(lambda r: httpx.Response(200, json={"payer_id": "P1", "name": "Private Person", "phone": "555"}))
+    with pytest.raises(PayPalError) as err:
+        client.get_login_profile("tok")
+    assert "did not return email" in err.value.body and "Private Person" not in err.value.body and "555" not in err.value.body

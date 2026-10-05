@@ -7,6 +7,7 @@ const ERRORS: Record<string, string> = {
   cancelled: 'Sign-in was cancelled. You can try again whenever you’re ready.',
   state: 'That sign-in link expired or didn’t match. Please start again.',
   paypal: 'PayPal couldn’t confirm your identity right now. Please try again.',
+  paypal_profile: 'PayPal signed you in but didn’t share the details we need (your name and email). Please try again, and make sure you approve sharing them on the PayPal page.',
 }
 
 // Only ever go back to a path on this site.

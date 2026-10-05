@@ -18,6 +18,7 @@ class FakePayPal:
             "name": "Sam Lee", "verified_account": True,
         }
         self.login_fails = False
+        self.profile_fails = False
 
     def create_order(self, *, amount, currency, description, return_url, cancel_url,
                      custom_id=None, request_id=None):
@@ -62,6 +63,8 @@ class FakePayPal:
         return f"token-for-{code}"
 
     def get_login_profile(self, access_token):
+        if self.profile_fails:
+            raise PayPalError("read login profile", 200, "PayPal did not return email. It returned: ['payer_id']")
         return dict(self.login_profile)
 
 

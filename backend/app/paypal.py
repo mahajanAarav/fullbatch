@@ -241,15 +241,25 @@ class PayPalClient:
         """
         Who just signed in, in one clean shape:
         {payer_id, email, email_verified, name, verified_account}.
+
+        PayPal offers the profile in two formats and which one carries the email can depend on how the
+        app's sign-in is set up, so both are tried.
         """
-        r = self._http.get(
-            "/v1/identity/oauth2/userinfo",
-            params={"schema": "paypalv1.1"},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        if r.status_code != 200:
-            raise PayPalError("read login profile", r.status_code, r.text)
-        return parse_login_profile(r.json(), r)
+        last: PayPalError | None = None
+        for schema in ("paypalv1.1", "openid"):
+            r = self._http.get(
+                "/v1/identity/oauth2/userinfo",
+                params={"schema": schema},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if r.status_code != 200:
+                last = PayPalError(f"read login profile ({schema})", r.status_code, r.text)
+                continue
+            try:
+                return parse_login_profile(r.json(), r)
+            except (PayPalError, ValueError) as err:
+                last = err if isinstance(err, PayPalError) else PayPalError(f"read login profile ({schema})", r.status_code, "not JSON")
+        raise last
 
     def close(self) -> None:
         self._http.close()
@@ -268,7 +278,9 @@ def parse_login_profile(data: dict, response: httpx.Response | None = None) -> d
 
     name = data.get("name") or " ".join(p for p in (data.get("given_name"), data.get("family_name")) if p) or (email or "")
     if not payer_id or not email:
-        raise PayPalError("read login profile", status, body)
+        # Say what was missing, never what was there: this message is logged, and the profile is personal data.
+        missing = [n for n, v in (("payer_id", payer_id), ("email", email)) if not v]
+        raise PayPalError("read login profile", status, f"PayPal did not return {', '.join(missing)}. It returned: {sorted(data)}")
     return {
         "payer_id": payer_id,
         "email": email,

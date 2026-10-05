@@ -184,3 +184,26 @@ def test_the_state_cookie_is_single_use(make_client):
     c.get("/auth/paypal/callback", params={"code": "abc", "state": state})
     again = c.get("/auth/paypal/callback", params={"code": "abc", "state": state})
     assert again.headers["location"].endswith("/signin?error=state")
+
+
+def test_a_profile_failure_is_reported_separately_from_a_token_failure(make_client, paypal):
+    paypal.profile_fails = True
+    c = make_client()
+    r = c.get("/auth/paypal/callback", params={"code": "abc", "state": start_login(c)})
+    assert r.headers["location"].endswith("/signin?error=paypal_profile")
+    assert c.get("/auth/me").json()["user"] is None
+
+
+def test_failures_are_logged_with_the_step_and_without_personal_data(make_client, paypal, caplog):
+    import logging
+
+    paypal.profile_fails = True
+    c = make_client()
+    with caplog.at_level(logging.WARNING, logger="app.auth"):
+        c.get("/auth/paypal/callback", params={"code": "abc", "state": start_login(c)})
+        paypal.profile_fails, paypal.login_fails = False, True
+        c2 = make_client()
+        c2.get("/auth/paypal/callback", params={"code": "abc", "state": start_login(c2)})
+    text = caplog.text
+    assert "read login profile" in text and "exchange login code" in text
+    assert "did not return email" in text and "sam@example.com" not in text and "Sam Lee" not in text

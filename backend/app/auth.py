@@ -9,6 +9,7 @@ How it works:
 """
 
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +37,7 @@ CODE_MAX_ATTEMPTS = 5    # wrong guesses before the code is dead
 RESEND_SECONDS = 60      # the shortest wait between two codes
 send_limiter = RateLimiter(limit=5, window=3600)  # emails per person per hour
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -169,9 +171,15 @@ def paypal_callback(
         return back("state")  # a forged or stale callback
 
     try:
-        profile = paypal.get_login_profile(paypal.exchange_login_code(code))
-    except PayPalError:
+        token = paypal.exchange_login_code(code)
+    except PayPalError as err:
+        log.warning("PayPal sign-in failed at '%s' (HTTP %s): %s", err.step, err.status_code, err.body[:300])
         return back("paypal")
+    try:
+        profile = paypal.get_login_profile(token)
+    except PayPalError as err:
+        log.warning("PayPal sign-in failed at '%s' (HTTP %s): %s", err.step, err.status_code, err.body[:300])
+        return back("paypal_profile")
 
     user = db.scalar(select(User).where(User.paypal_payer_id == profile["payer_id"]))
     if user is None:
