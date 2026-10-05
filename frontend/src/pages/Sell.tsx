@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { cancelDrop, createShop, myDrops, type Drop } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
@@ -9,6 +9,7 @@ import { Toast } from '../components/Toast'
 import { useAuth } from '../authContext'
 import { money } from '../format'
 import { usePolling } from '../hooks'
+import { PREPARE_DROP_EVENT } from '../studio/plannerAgent'
 
 // AG Studio is a large library, so it only loads when a seller opens the Dashboard tab.
 const Dashboard = lazy(() => import('../components/Dashboard'))
@@ -94,6 +95,16 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
   const [toast, setToast] = useState<string | null>(null)
   const clearToast = useCallback(() => setToast(null), [])
   const t = totals(drops ?? [])
+
+  // The dashboard's Drop planner agent can ask for the New drop form to open, pre-filled. It never creates the drop.
+  useEffect(() => {
+    const open = (e: Event) => {
+      setDraft((e as CustomEvent<DropDraft>).detail)
+      setCreating(true)
+    }
+    window.addEventListener(PREPARE_DROP_EVENT, open)
+    return () => window.removeEventListener(PREPARE_DROP_EVENT, open)
+  }, [])
 
   async function confirmCancel() {
     if (!cancelling) return

@@ -31,6 +31,7 @@ backend/
     auth.py       sign-in: PayPal login, dev login, cookie sessions, access checks
     paypal.py     authorize, capture, void, plus Log in with PayPal calls
     drops.py      drop engine: stock, minimum, deadline, settlement, seller verification
+    studio_ai.py  server side of AG Studio's assistant (POST /ai/turn): guarded, rate limited, runs our Groq-then-Gemini chain
     planner.py    drop planner: per-drop reports + explainable next-drop recommendations (numbers from code, not the LLM)
     agent.py      chat agent and its role-scoped tools
     llm.py        provider-neutral model interface + fallback;  gemini.py, groq.py, llm_factory.py
@@ -53,6 +54,7 @@ dev.sh            starts the database, API and frontend locally
 - PayPal sandbox checks: `python backend/scripts/check_paypal_credentials.py`; the flow scripts are interactive
   (a person must approve the payment as a sandbox buyer), so do not run `test_paypal_flow.py` or `test_paypal_client.py` unattended.
 - Demo data for the dashboard and screenshots (local DB only): `python backend/scripts/seed_demo.py`, then dev-sign-in as demo@example.com (tick verified)
+- The dashboard's AI assistant (AG Studio Agent Framework): a custom "Drop planner" agent in `frontend/src/studio/` (adapter.ts talks to /api/ai/turn; plannerAgent.ts defines the agent and its tools). It appears in Studio's edit mode ("Customize & AI planner"). It can open the New drop form pre-filled but never creates a drop.
 - Live model check: `python backend/scripts/check_gemini_agent.py [--provider gemini|groq|auto]`
 
 ## Rules

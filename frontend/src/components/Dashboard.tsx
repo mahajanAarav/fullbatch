@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
-import { AgStudio } from 'ag-studio-react'
-import { studioTheme } from 'ag-studio'
+import { AgStudio, AgStudioProvider } from 'ag-studio-react'
+import { AgStudioAiModule, studioTheme } from 'ag-studio'
 import type { AgDataSourcesDefinition, AgReportState, AgStudioMode } from 'ag-studio'
 import { myAnalytics } from '../api'
 import { usePolling } from '../hooks'
+import { dashboardAi } from '../studio/plannerAgent'
 
 // AG Studio computes everything in the browser from plain arrays. We give it two tables
 // (drops, orders) and describe a finished dashboard as data, so the seller sees it immediately.
@@ -197,14 +198,18 @@ export default function Dashboard() {
     <section className="dashboard card" aria-label="Seller dashboard">
       <div className="dashboard-bar">
         <span className="muted small">
-          {mode === 'view' ? 'Click a chart to filter the rest of the page.' : 'Drag, resize and add widgets.'}
+          {mode === 'view'
+            ? 'Click a chart to filter the rest of the page. Open Customize to ask the AI Drop planner.'
+            : 'Ask the Drop planner in the panel on the left, or drag, resize and add widgets.'}
         </span>
         <button className="button button-ghost button-small" onClick={() => setMode(mode === 'view' ? 'edit' : 'view')}>
-          {mode === 'view' ? 'Customize' : 'Done'}
+          {mode === 'view' ? 'Customize & AI planner' : 'Done'}
         </button>
       </div>
       <div className="dashboard-canvas">
-        <AgStudio data={sources} initialState={INITIAL_STATE} mode={mode} theme={theme} />
+        <AgStudioProvider modules={[AgStudioAiModule]}>
+          <AgStudio data={sources} initialState={INITIAL_STATE} mode={mode} theme={theme} ai={dashboardAi} />
+        </AgStudioProvider>
       </div>
     </section>
   )
