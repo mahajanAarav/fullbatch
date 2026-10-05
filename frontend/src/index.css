@@ -431,3 +431,8 @@ fieldset.where legend { padding: 0 6px; font-weight: 700; font-size: 0.85rem; }
 .pill-payout { font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; background: rgba(0,0,0,.06); }
 .pill-payout-success { background: rgba(30,140,70,.15); }
 .pill-payout-denied, .pill-payout-unavailable { background: rgba(190,50,40,.14); }
+
+.paypal-map { list-style: none; padding: 0; display: grid; gap: 10px; margin: 18px 0; }
+.paypal-map li { display: grid; gap: 2px; padding: 12px 14px; }
+.paypal-map p { margin: 4px 0 0; }
+.lead { font-size: 1.0625rem; }

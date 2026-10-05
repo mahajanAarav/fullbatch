@@ -36,6 +36,10 @@ services:
         value: "587"
       - key: TIMEZONE
         value: America/New_York
+      - key: PLATFORM_FEE_PERCENT  # what fullbatch keeps from each filled drop before paying the seller
+        value: "5"
+      - key: DEMO_MODE             # "1" shows a Close-now button for demos. Safe on the sandbox; never use with live PayPal.
+        value: "1"
       - key: JOB_INTERVAL_SECONDS  # settle due drops every 30s from inside the app
         value: "30"
       # DEV_LOGIN is deliberately NOT set here. The dev sign-in must never exist on the deployed app.

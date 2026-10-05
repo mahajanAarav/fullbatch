@@ -106,3 +106,11 @@ own locations (ZIP code or "use my location") stay in their browser and are neve
   the frontend builds, the runtime-only Python requirements install into a clean environment, and the server runs and serves
   both the API and the app. If the first Render build fails, the build log will say why. Send it over.
 - `DEV_LOGIN` must stay unset in production.
+
+## 9. Payouts and demo mode
+
+- **Payouts:** in the PayPal developer dashboard, open your sandbox app → *Features* → tick **Payouts** (it may need a moment, or approval). Until it is on, payouts show "Will retry" on the seller page and are sent automatically once it is enabled. The sandbox *business* account that owns the app is the one that pays out, so give it some test balance if it is empty.
+- **Fee:** `PLATFORM_FEE_PERCENT` (default 5) is kept from each filled drop; the seller gets the rest.
+- **Webhook events:** in the webhook, also tick *Payment capture completed / refunded / reversed / denied*, *Payment authorization voided*, and *Payouts batch/item* events.
+- **PayPal buttons:** nothing to set. They load with `PAYPAL_CLIENT_ID`. If PayPal's script is blocked, buyers get the full-page redirect instead.
+- **Demo mode:** `DEMO_MODE=1` shows a "Close now (demo)" button on a seller's open drops, which settles the drop immediately. Fine for the sandbox demo; leave it off for anything real.

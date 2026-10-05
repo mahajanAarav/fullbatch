@@ -5,6 +5,7 @@ import { AuthProvider, RequireAuth } from './auth'
 import { VerifyEmailDialog } from './components/VerifyEmailDialog'
 import { useAuth } from './authContext'
 import { usePolling } from './hooks'
+import BuiltOnPayPal from './pages/BuiltOnPayPal'
 import Home from './pages/Home'
 import OrderStatus from './pages/OrderStatus'
 import Orders from './pages/Orders'
@@ -31,6 +32,7 @@ function Nav() {
         </NavLink>
       )}
       <NavLink to="/sell">Sell</NavLink>
+      <NavLink to="/built-on-paypal">Built on PayPal</NavLink>
       {me !== null &&
         (user ? (
           <div className="account">
@@ -83,6 +85,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/buy" element={<Navigate to="/" replace />} />
+        <Route path="/built-on-paypal" element={<BuiltOnPayPal />} />
         <Route path="/shop/:id" element={<Shop />} />
         <Route path="/signin" element={<SignIn />} />
         <Route path="/sell" element={<RequireAuth><Sell /></RequireAuth>} />
