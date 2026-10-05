@@ -51,7 +51,7 @@ def test_roles_get_only_their_own_tools(session, seller, paypal):
     assert {t["name"] for t in llm.calls[0]["tools"]} == {"list_open_drops", "check_stock", "place_order", "my_orders"}
     llm = ScriptedLLM("hi")
     turn(session, llm, paypal, "seller", "hello", seller_id=seller.id)
-    assert {t["name"] for t in llm.calls[0]["tools"]} == {"create_drop", "list_my_drops", "get_drop_status", "cancel_drop"}
+    assert {t["name"] for t in llm.calls[0]["tools"]} == {"create_drop", "list_my_drops", "get_drop_status", "plan_next_drop", "cancel_drop"}
 
 
 def test_a_tool_outside_the_role_is_refused(session, make_drop, paypal):
@@ -155,6 +155,40 @@ def test_drop_status_reports_progress_toward_the_minimum(session, seller, make_d
     turn(session, llm, paypal, "seller", "how is it going", seller_id=seller.id)
     result = tool_results(llm, 1)[0]
     assert result["paid_up_units"] == 2 and result["minimum_met_so_far"] is False
+
+
+# ---- the planner tool -------------------------------------------------------
+
+def test_planner_tool_reads_but_never_creates(session, seller, make_drop, paypal):
+    drop = make_drop(minimum_units=1)
+    order = drops.reserve_stock(session, drop.id, "A", "a@example.com", "chat-a", 2)
+    drops.start_checkout(session, paypal, order.id, "r", "c")
+    drops.confirm_authorization(session, paypal, f"PPO-{order.id}")
+    drops.settle_drop(session, paypal, drop.id, now=drop.deadline + timedelta(seconds=1))
+    before = len(session.scalars(select(Drop)).all())
+
+    llm = ScriptedLLM([("plan_next_drop", {})], "Here is the plan")
+    turn(session, llm, paypal, "seller", "what should I run next?", seller_id=seller.id)
+
+    result = tool_results(llm, 1)[0]
+    assert result["recommendation"]["enough_data"] is True and result["last_finished_drop"]["drop_id"] == drop.id
+    assert "do not change them" in result["note"]
+    assert len(session.scalars(select(Drop)).all()) == before        # nothing was created
+
+
+def test_planner_tool_with_no_history_and_with_someone_elses_drop(session, seller, paypal):
+    llm = ScriptedLLM([("plan_next_drop", {})], "ok")
+    turn(session, llm, paypal, "seller", "plan", seller_id=seller.id)
+    assert tool_results(llm, 1)[0]["recommendation"]["enough_data"] is False
+    llm = ScriptedLLM([("plan_next_drop", {"drop_id": 9999})], "ok")
+    turn(session, llm, paypal, "seller", "plan that one", seller_id=seller.id)
+    assert "isn't finished" in tool_results(llm, 1)[-1]["error"]  # the newest result: this chat has two turns
+
+
+def test_the_planner_is_not_a_buyer_tool(session, paypal, buyer):
+    llm = ScriptedLLM([("plan_next_drop", {})], "no")
+    turn(session, llm, paypal, "buyer", "plan", user=buyer)
+    assert "Unknown tool" in tool_results(llm, 1)[0]["error"]
 
 
 # ---- buyer flows -----------------------------------------------------------

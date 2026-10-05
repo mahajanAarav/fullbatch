@@ -415,3 +415,43 @@ def test_analytics_only_covers_my_own_shop(make_client):
     make_drop(a, item_name="Mine")
     make_drop(b, item_name="Theirs")
     assert [d["item_name"] for d in a.get("/me/analytics").json()["drops"]] == ["Mine"]
+
+
+# ---- drop planner ---------------------------------------------------------------------
+
+def finished_drop(make_client, session_factory, paypal, seller, quantity=2):
+    """A drop that ran, filled and was settled, through the real engine."""
+    drop = make_drop(seller, quantity_total=10, minimum_units=2).json()
+    paid_order(buyer_client(make_client, f"p{drop['id']}@example.com"), drop["id"], quantity)
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))
+    return drop
+
+
+def test_plan_requires_a_shop(make_client):
+    assert make_client().get("/me/plan").status_code == 401
+    assert seller_client(make_client, shop=False).get("/me/plan").status_code == 403
+
+
+def test_plan_with_no_finished_drops_says_so(make_client):
+    out = seller_client(make_client).get("/me/plan").json()
+    assert out["recommendation"]["enough_data"] is False and out["reports"] == []
+
+
+def test_plan_after_a_finished_drop(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    drop = finished_drop(make_client, session_factory, paypal, seller)
+    out = seller.get("/me/plan").json()
+    rec = out["recommendation"]
+    assert rec["enough_data"] is True and rec["confidence"] == "low" and rec["based_on"] == [drop["id"]]
+    assert out["reports"][0]["committed_units"] == 2 and out["reports"][0]["status"] == "filled"
+    assert rec["recommended"]["item_name"] == "Sourdough" and rec["reasons"]
+
+
+def test_plan_can_focus_on_one_drop_but_only_your_own(make_client, session_factory, paypal):
+    a, b = seller_client(make_client, email="a@example.com"), seller_client(make_client, email="b@example.com")
+    mine = finished_drop(make_client, session_factory, paypal, a)
+    theirs = finished_drop(make_client, session_factory, paypal, b)
+    assert a.get("/me/plan", params={"drop_id": mine["id"]}).json()["reports"][0]["drop_id"] == mine["id"]
+    assert a.get("/me/plan", params={"drop_id": theirs["id"]}).status_code == 404
+    still_open = make_drop(a).json()
+    assert a.get("/me/plan", params={"drop_id": still_open["id"]}).status_code == 404   # not finished

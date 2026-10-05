@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import drops
+from app import drops, planner
 from app.config import Settings
 from app.llm import LLM
 from app.models import ChatMessage, Drop, DropStatus, Order, OrderStatus, User, conversation_id
@@ -138,6 +138,27 @@ def get_drop_status(ctx: ToolContext, a: DropIdArgs) -> dict:
     return drops.drop_progress(ctx.session, _own_drop(ctx, a.drop_id))
 
 
+class PlanArgs(BaseModel):
+    drop_id: int = Field(default=0, description="A finished drop to focus on, or 0 for the most recent finished one")
+
+
+def plan_next_drop(ctx: ToolContext, a: PlanArgs) -> dict:
+    reports = planner.settled_reports(ctx.session, ctx.seller_id, ctx.settings.timezone)
+    if a.drop_id:
+        match = [r for r in reports if r["drop_id"] == a.drop_id]
+        if not match:
+            return {"error": "That drop isn't finished yet, or isn't one of yours."}
+        reports = match + [r for r in reports if r["drop_id"] != a.drop_id]
+    return {
+        "recommendation": planner.recommend(reports, ctx.settings.timezone),
+        "last_finished_drop": reports[0] if reports else None,
+        "note": (
+            "These numbers were computed from this seller's own finished drops. Explain them plainly and "
+            "do not change them. Only create a drop if the seller confirms the details."
+        ),
+    }
+
+
 class CancelDropArgs(BaseModel):
     drop_id: int
     confirm: bool = Field(description="Must be true. Only set it after the seller has clearly agreed to cancel.")
@@ -218,6 +239,7 @@ SELLER_TOOLS = [
     Tool("create_drop", "Create a new preorder drop for this seller.", CreateDropArgs, create_drop),
     Tool("list_my_drops", "List this seller's most recent drops with live stock numbers.", NoArgs, list_my_drops),
     Tool("get_drop_status", "Detailed progress of one of this seller's drops, including whether the minimum is met so far.", DropIdArgs, get_drop_status),
+    Tool("plan_next_drop", "Review how the seller's finished drops went and recommend quantity, minimum, price and timing for the next one. Read-only: it never creates a drop.", PlanArgs, plan_next_drop),
     Tool("cancel_drop", "Cancel an open drop and release every payment hold. Needs the seller's explicit confirmation.", CancelDropArgs, cancel_drop),
 ]
 
@@ -252,7 +274,10 @@ def system_prompt(role: str, settings: Settings) -> str:
             f"You are the fullbatch assistant helping a small seller (home baker, market vendor) run preorder drops. "
             f"Now: {now}.\n{how_it_works}\n"
             "To create a drop you need: item, price, quantity, minimum units and deadline. Ask for anything missing, "
-            "then confirm the details back before creating it. Each buyer may order at most 4 units unless the "
+            "then confirm the details back before creating it. When the seller asks how a drop went, or what to run "
+            "next, call plan_next_drop, explain the result and the reasons in plain language, say how confident it is, and "
+            "offer to create the drop. Never invent figures that the tool did not return, and never create the drop until "
+            "the seller agrees. Each buyer may order at most 4 units unless the "
             "seller asks for a different limit. Before cancelling a drop, ask the seller to confirm, "
             "and only then call cancel_drop with confirm=true.\n" + rules
         )

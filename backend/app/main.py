@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app import agent, auth, drops
+from app import agent, auth, drops, planner
 from app.auth import buyer_chat_id, require_shop, require_user
 from app.config import Settings, get_settings
 from app.db import get_session
@@ -220,6 +220,23 @@ def my_analytics(shop: Seller = Depends(require_shop), session: Session = Depend
                 "amount_collected": float(o.amount) if status == "captured" else 0.0,
             })
     return {"drops": drops_out, "orders": orders_out}
+
+
+@app.get("/me/plan")
+def my_plan(
+    drop_id: int | None = None,
+    shop: Seller = Depends(require_shop),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    """How the seller's finished drops went, and a suggestion for the next one."""
+    reports = planner.settled_reports(session, shop.id, settings.timezone)
+    if drop_id is not None:
+        match = [r for r in reports if r["drop_id"] == drop_id]
+        if not match:
+            raise drops.DropNotFound("That drop isn't finished yet, or isn't one of yours.")
+        reports = match + [r for r in reports if r["drop_id"] != drop_id]  # asked-about drop leads
+    return {"recommendation": planner.recommend(reports, settings.timezone), "reports": reports}
 
 
 @app.post("/drops/{drop_id}/cancel")
