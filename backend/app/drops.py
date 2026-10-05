@@ -650,16 +650,17 @@ def release_reservation(session: Session, order_id: int, reason: str = "released
     session.commit()
 
 
-def run_deadline_job(session_factory, paypal, now: datetime | None = None) -> dict:
+def run_deadline_job(session_factory, paypal, now: datetime | None = None, fee_percent: float | None = None) -> dict:
     """
     The scheduled job. Safe to run as often as you like, from several places at once.
       1. expire unpaid reservations whose time is up
       2. settle every open drop that is past its deadline
       3. finish drops that were decided but not fully processed (e.g. after a crash)
+      4. pay sellers for drops that filled (see payouts.py)
     A problem with one drop is recorded and never stops the others.
     """
     now = now or _now()
-    summary = {"expired": 0, "settled": [], "errors": []}
+    summary = {"expired": 0, "settled": [], "errors": [], "payouts": []}
 
     with session_factory() as session:
         summary["expired"] = expire_stale_reservations(session, now)
@@ -683,6 +684,12 @@ def run_deadline_job(session_factory, paypal, now: datetime | None = None) -> di
             except Exception as err:  # keep going: one bad drop must not block the rest
                 session.rollback()
                 summary["errors"].append({"drop_id": drop_id, "error": str(err)[:200]})
+
+    from app import payouts
+    from app.config import get_settings
+
+    pct = get_settings().platform_fee_percent if fee_percent is None else fee_percent
+    summary["payouts"] = payouts.run_payouts(session_factory, paypal, pct)
     return summary
 
 

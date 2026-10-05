@@ -221,6 +221,27 @@ class Order(Base):
     drop: Mapped[Drop] = relationship(back_populates="orders")
 
 
+class Payout(Base):
+    """What a seller is paid when their drop fills: what buyers paid, minus the platform fee."""
+
+    __tablename__ = "payouts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    drop_id: Mapped[int] = mapped_column(ForeignKey("drops.id"), unique=True)  # one payout per drop, ever
+    seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"), index=True)
+    gross: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    fee: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    net: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    receiver_email: Mapped[str | None] = mapped_column(String(254))
+    batch_id: Mapped[str | None] = mapped_column(String(64), unique=True)  # PayPal's payout batch id
+    # pending (sent, not finished) | success | unclaimed | denied | unavailable (will retry) | skipped
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    detail: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DropEvent(Base):
     """A simple log of what happened in a drop. Feeds the planner and the demo."""
 

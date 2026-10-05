@@ -14,6 +14,9 @@ class FakePayPal:
         self.fail_create = False                  # make checkout creation fail
         self.reauthorized: list[tuple[str, str]] = []   # (old id, new id)
         self.fail_reauthorize = False
+        self.payouts: list[dict] = []                   # payouts we were asked to send
+        self.payout_unavailable = False                 # Payouts not enabled on the account
+        self.payout_state = "success"                   # what get_payout answers
         self.webhook_valid = True                 # what signature verification answers
         self.login_profile = {                    # who "PayPal" says just signed in
             "payer_id": "PAYER-1", "email": "sam@example.com", "email_verified": True,
@@ -57,6 +60,18 @@ class FakePayPal:
         new_id = f"{authorization_id}-R"
         self.reauthorized.append((authorization_id, new_id))
         return {"id": new_id, "status": "CREATED", "expiration_time": "2026-11-20T00:00:00Z"}
+
+    def create_payout(self, *, sender_batch_id, receiver_email, amount, currency, note, sender_item_id):
+        if self.payout_unavailable:
+            raise PayPalError("create payout", 403, "PERMISSION_DENIED")
+        if any(p["sender_batch_id"] == sender_batch_id for p in self.payouts):
+            raise PayPalError("create payout", 400, "DUPLICATE_BATCH")  # what PayPal really does
+        self.payouts.append({"sender_batch_id": sender_batch_id, "receiver": receiver_email,
+                             "amount": amount, "currency": currency})
+        return {"batch_id": f"PAYOUT-{sender_batch_id}", "status": "PENDING"}
+
+    def get_payout(self, batch_id):
+        return {"status": self.payout_state, "detail": self.payout_state.upper()}
 
     def void_authorization(self, authorization_id, *, request_id=None):
         self.request_ids.append(request_id)

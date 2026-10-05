@@ -30,6 +30,8 @@ class Settings:
     email_from: str = ""
     # Address lookups are limited to these countries (comma-separated ISO codes), so a bare ZIP means a US ZIP.
     geo_countries: str = "us"
+    # What fullbatch keeps from each filled drop before paying the seller the rest.
+    platform_fee_percent: float = 5.0
 
     @property
     def cookie_secure(self) -> bool:
@@ -52,4 +54,5 @@ def get_settings() -> Settings:
         smtp_password=os.getenv("SMTP_PASSWORD", ""),
         email_from=os.getenv("EMAIL_FROM", ""),
         geo_countries=os.getenv("GEO_COUNTRIES", "us") or "us",
+        platform_fee_percent=float(os.getenv("PLATFORM_FEE_PERCENT", "5") or 5),
     )

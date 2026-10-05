@@ -226,6 +226,52 @@ class PayPalClient:
         )
         return r.json().get("verification_status") == "SUCCESS"
 
+    # ---- Payouts: paying sellers ------------------------------------------
+
+    def create_payout(
+        self,
+        *,
+        sender_batch_id: str,
+        receiver_email: str,
+        amount: Decimal,
+        currency: str,
+        note: str,
+        sender_item_id: str,
+    ) -> dict:
+        """
+        Send money from our PayPal account to a seller's. `sender_batch_id` is unique per payout: PayPal
+        refuses a second batch with the same one, which is what stops us paying twice.
+        Returns {batch_id, status}.
+        """
+        body = {
+            "sender_batch_header": {
+                "sender_batch_id": sender_batch_id,
+                "email_subject": "Your fullbatch payout",
+                "email_message": "A drop you ran on fullbatch filled. Here is your payout.",
+            },
+            "items": [{
+                "recipient_type": "EMAIL",
+                "receiver": receiver_email,
+                "amount": {"value": f"{amount:.2f}", "currency": currency},
+                "note": note[:160],
+                "sender_item_id": sender_item_id,
+            }],
+        }
+        r = self._request("POST", "/v1/payments/payouts", step="create payout", json=body, request_id=sender_batch_id)
+        header = r.json().get("batch_header", {})
+        if not header.get("payout_batch_id"):
+            raise PayPalError("read payout", r.status_code, "PayPal did not return a batch id")
+        return {"batch_id": header["payout_batch_id"], "status": header.get("batch_status", "PENDING")}
+
+    def get_payout(self, batch_id: str) -> dict:
+        """What happened to a payout: {status, detail}, where status is our own word for it."""
+        r = self._request("GET", f"/v1/payments/payouts/{batch_id}", step="read payout", ok=(200,))
+        data = r.json()
+        batch = (data.get("batch_header") or {}).get("batch_status", "PENDING")
+        items = data.get("items") or []
+        item = (items[0].get("transaction_status") if items else None) or batch
+        return {"status": payout_status(item, batch), "detail": _payout_error(items) or item}
+
     # ---- Log in with PayPal -----------------------------------------------
 
     def login_url(self, *, redirect_uri: str, state: str) -> str:
@@ -280,6 +326,25 @@ class PayPalClient:
 
     def close(self) -> None:
         self._http.close()
+
+
+_PAYOUT_DONE = {"SUCCESS": "success", "UNCLAIMED": "unclaimed"}
+_PAYOUT_BAD = {"DENIED", "FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "CANCELED", "ONHOLD_FAILED"}
+
+
+def payout_status(item_status: str, batch_status: str = "") -> str:
+    """PayPal's many payout words, in the few our app uses."""
+    item = (item_status or "").upper()
+    if item in _PAYOUT_DONE:
+        return _PAYOUT_DONE[item]
+    if item in _PAYOUT_BAD or (batch_status or "").upper() in {"DENIED", "CANCELED"}:
+        return "denied"
+    return "pending"
+
+
+def _payout_error(items: list) -> str | None:
+    errors = (items[0].get("errors") or {}) if items else {}
+    return (errors.get("name") or errors.get("message") or None) if isinstance(errors, dict) else None
 
 
 def parse_login_profile(data: dict, response: httpx.Response | None = None) -> dict:
