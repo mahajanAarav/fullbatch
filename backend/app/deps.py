@@ -28,3 +28,12 @@ def get_studio_llm():
     from app.llm_factory import from_env as llm_from_env
 
     return llm_from_env(order=("groq", "gemini"))
+
+
+@lru_cache
+def get_mailer():
+    """The outgoing-email sender, or None when SMTP is not configured."""
+    from app.config import get_settings
+    from app.mailer import from_settings
+
+    return from_settings(get_settings())

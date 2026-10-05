@@ -20,15 +20,21 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.deps import get_paypal
-from app.models import AuthSession, Seller, User
+from app.deps import get_mailer, get_paypal
+from app.mailer import MailError
+from app.models import AuthSession, EmailCode, Seller, User
 from app.paypal import PayPalError
+from app.ratelimit import RateLimiter
 
 SESSION_COOKIE = "fb_session"
 STATE_COOKIE = "fb_oauth_state"
 NEXT_COOKIE = "fb_oauth_next"
 SESSION_DAYS = 14
 STATE_MINUTES = 10
+CODE_MINUTES = 10        # how long an emailed code works
+CODE_MAX_ATTEMPTS = 5    # wrong guesses before the code is dead
+RESEND_SECONDS = 60      # the shortest wait between two codes
+send_limiter = RateLimiter(limit=5, window=3600)  # emails per person per hour
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -71,6 +77,13 @@ def require_user(user: User | None = Depends(get_current_user)) -> User:
     return user
 
 
+def require_verified_email(user: User = Depends(require_user)) -> User:
+    """Reserving and opening a shop need a confirmed email, so there is always a way to reach people."""
+    if not user.email_verified:
+        raise HTTPException(403, "Please verify your email first.")
+    return user
+
+
 def shop_of(db: Session, user: User) -> Seller | None:
     return db.scalar(select(Seller).where(Seller.user_id == user.id))
 
@@ -92,7 +105,7 @@ def me_payload(db: Session, user: User | None, settings: Settings) -> dict:
     return {
         "user": None if user is None else {
             "id": user.id, "name": user.name, "email": user.email,
-            "paypal_verified": user.paypal_verified, "is_dev": user.is_dev,
+            "paypal_verified": user.paypal_verified, "email_verified": user.email_verified, "is_dev": user.is_dev,
         },
         "shop": None if shop is None else {"id": shop.id, "name": shop.name, "verified": shop.verified},
         "dev_login": settings.dev_login,
@@ -178,6 +191,7 @@ class DevLoginIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
     verified: bool = True  # lets you try the "unverified seller" experience too
+    email_verified: bool = True  # untick to try the email-code flow
 
 
 @router.post("/dev-login")
@@ -189,7 +203,7 @@ def dev_login(body: DevLoginIn, db: Session = Depends(get_session), settings: Se
     if user is None:
         user = User(email=body.email, is_dev=True)
         db.add(user)
-    user.name, user.email_verified, user.paypal_verified = body.name.strip(), True, body.verified
+    user.name, user.email_verified, user.paypal_verified = body.name.strip(), body.email_verified, body.verified
     db.commit()
     response = JSONResponse(me_payload(db, user, settings))
     _set_session_cookie(response, start_session(db, user), settings)
@@ -205,3 +219,91 @@ def logout(request: Request, db: Session = Depends(get_session)):
     response = JSONResponse({"ok": True})
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response
+
+
+# ---- email verification ------------------------------------------------------
+
+def _code_hash(user_id: int, email: str, code: str) -> str:
+    return hashlib.sha256(f"{user_id}:{email.lower()}:{code}".encode()).hexdigest()
+
+
+def _mask(email: str) -> str:
+    name, _, domain = email.partition("@")
+    return f"{name[:1]}{'*' * max(len(name) - 1, 1)}@{domain}"
+
+
+@router.post("/email/send")
+def email_send(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_session),
+    mailer=Depends(get_mailer),
+    settings: Settings = Depends(get_settings),
+):
+    """Email a 6-digit code to the address on the account."""
+    if user.email_verified:
+        return {"already_verified": True}
+
+    now = _now()
+    newest = db.scalar(select(EmailCode).where(EmailCode.user_id == user.id).order_by(EmailCode.id.desc()).limit(1))
+    if newest and (now - newest.created_at).total_seconds() < RESEND_SECONDS:
+        wait = RESEND_SECONDS - int((now - newest.created_at).total_seconds())
+        raise HTTPException(429, f"Please wait {wait} seconds before asking for another code.")
+    if not send_limiter.allow(user.id):
+        raise HTTPException(429, "Too many codes requested. Please try again later.")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    for old in db.scalars(select(EmailCode).where(EmailCode.user_id == user.id, EmailCode.consumed_at.is_(None))):
+        old.consumed_at = now  # only the newest code works
+    db.add(EmailCode(user_id=user.id, email=user.email, code_hash=_code_hash(user.id, user.email, code),
+                     expires_at=now + timedelta(minutes=CODE_MINUTES)))
+    db.commit()
+
+    if mailer is None:
+        if settings.dev_login:  # local development only: show the code instead of emailing it
+            return {"sent": False, "dev_code": code, "email": _mask(user.email)}
+        raise HTTPException(503, "Email verification isn't set up yet.")
+    try:
+        mailer.send(
+            user.email,
+            "Your fullbatch verification code",
+            f"Your fullbatch verification code is {code}.\n\nIt expires in {CODE_MINUTES} minutes. "
+            "If you didn't ask for this, you can ignore this email.",
+        )
+    except MailError:
+        raise HTTPException(502, "We couldn't send the email. Please try again in a moment.")
+    return {"sent": True, "email": _mask(user.email)}
+
+
+class EmailCodeIn(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+@router.post("/email/verify")
+def email_verify(
+    body: EmailCodeIn,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    now = _now()
+    row = db.scalar(
+        select(EmailCode)
+        .where(EmailCode.user_id == user.id, EmailCode.email == user.email, EmailCode.consumed_at.is_(None))
+        .order_by(EmailCode.id.desc())
+        .limit(1)
+    )
+    if row is None or row.expires_at <= now:
+        raise HTTPException(400, "That code has expired. Please ask for a new one.")
+    if row.attempts >= CODE_MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many wrong tries. Please ask for a new code.")
+
+    if not secrets.compare_digest(row.code_hash, _code_hash(user.id, user.email, body.code)):
+        row.attempts += 1
+        db.commit()
+        left = CODE_MAX_ATTEMPTS - row.attempts
+        raise HTTPException(400, f"That code isn't right. {left} {'try' if left == 1 else 'tries'} left." if left else "Too many wrong tries. Please ask for a new code.")
+
+    row.consumed_at = now
+    user.email_verified = True
+    db.commit()
+    return me_payload(db, user, settings)

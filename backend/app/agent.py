@@ -191,6 +191,8 @@ class PlaceOrderArgs(BaseModel):
 
 
 def place_order(ctx: ToolContext, a: PlaceOrderArgs) -> dict:
+    if not ctx.user.email_verified:
+        return {"error": "The buyer needs to verify their email first. They can do that from the Reserve button or the banner on the site."}
     # Who is buying comes from the signed-in account, never from anything the model supplies.
     order, link = drops.place_order(
         ctx.session,

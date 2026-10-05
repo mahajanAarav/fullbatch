@@ -22,6 +22,12 @@ class Settings:
     timezone: str = "America/New_York"
     # Local-only sign-in that skips PayPal. NEVER enable on the deployed app.
     dev_login: bool = False
+    # Outgoing email (verification codes). Any SMTP provider works, e.g. Gmail with an app password or Brevo's free tier.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    email_from: str = ""
 
     @property
     def cookie_secure(self) -> bool:
@@ -38,4 +44,9 @@ def get_settings() -> Settings:
         paypal_webhook_id=os.getenv("PAYPAL_WEBHOOK_ID", ""),
         timezone=os.getenv("TIMEZONE", "America/New_York"),
         dev_login=os.getenv("DEV_LOGIN", "") == "1",
+        smtp_host=os.getenv("SMTP_HOST", ""),
+        smtp_port=int(os.getenv("SMTP_PORT", "587") or 587),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_password=os.getenv("SMTP_PASSWORD", ""),
+        email_from=os.getenv("EMAIL_FROM", ""),
     )

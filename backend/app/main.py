@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app import agent, auth, drops, planner, studio_ai
-from app.auth import buyer_chat_id, require_shop, require_user
+from app.auth import buyer_chat_id, require_shop, require_user, require_verified_email
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.deps import get_llm, get_paypal
@@ -151,7 +151,7 @@ def get_drop(drop_id: int, session: Session = Depends(get_session)):
 # ---- seller routes ---------------------------------------------------------
 
 @app.post("/shop", status_code=201)
-def create_shop(body: ShopIn, user: User = Depends(require_user), session: Session = Depends(get_session)):
+def create_shop(body: ShopIn, user: User = Depends(require_verified_email), session: Session = Depends(get_session)):
     """The signed-in user opens their shop. One shop per person."""
     if auth.shop_of(session, user) is not None:
         raise HTTPException(409, "You already have a shop.")
@@ -258,7 +258,7 @@ def cancel_drop(
 def place_order(
     drop_id: int,
     body: OrderIn,
-    user: User = Depends(require_user),
+    user: User = Depends(require_verified_email),
     session: Session = Depends(get_session),
     paypal=Depends(get_paypal),
     settings: Settings = Depends(get_settings),

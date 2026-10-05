@@ -91,8 +91,28 @@ class ScriptedLLM:
         }
 
 
-def sign_in(client, name="Ann Baker", email="ann@example.com", verified=True):
+def sign_in(client, name="Ann Baker", email="ann@example.com", verified=True, email_verified=True):
     """Sign a TestClient in through the local dev login. Its cookie jar keeps the session."""
-    r = client.post("/auth/dev-login", json={"name": name, "email": email, "verified": verified})
+    r = client.post("/auth/dev-login", json={"name": name, "email": email, "verified": verified, "email_verified": email_verified})
     assert r.status_code == 200, r.text
     return r.json()
+
+
+class FakeMailer:
+    """Collects emails instead of sending them. Set fail=True to simulate a broken provider."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.fail = False
+
+    def send(self, to, subject, body):
+        from app.mailer import MailError
+
+        if self.fail:
+            raise MailError("SMTPException")
+        self.sent.append({"to": to, "subject": subject, "body": body})
+
+    def last_code(self) -> str:
+        import re
+
+        return re.search(r"\b(\d{6})\b", self.sent[-1]["body"]).group(1)
