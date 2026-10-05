@@ -27,14 +27,15 @@ Secrets (keys, passwords) go into the Render dashboard only. They are never comm
    | `DATABASE_URL` | the Neon connection string |
    | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | the same sandbox values as your `.env` |
    | `GEMINI_KEY`, `GROQ_KEY` | the same as your `.env` |
-   | `PUBLIC_API_URL`, `FRONTEND_URL`, `PAYPAL_WEBHOOK_ID` | leave blank for now (steps 3 and 4) |
+   | `PUBLIC_API_URL`, `FRONTEND_URL`, `PAYPAL_WEBHOOK_ID` | leave blank. **Render drops blank variables**, so you will add them by hand in steps 3 and 4 |
 
 3. Create it and wait for the first deploy (a few minutes). Render shows your address, like
    `https://fullbatch.onrender.com`. **If the name was taken it adds a suffix. Use whatever it shows.**
 
 ## 3. Tell the app its own address
 
-In the service's **Environment** tab, set (replace `YOUR-URL`):
+In the service's **Environment** tab, click **Add variable** for each of these (they will not be there yet, because Render drops blank
+variables). Replace `YOUR-URL`, use **https**, and leave **no trailing slash**:
 
 - `PUBLIC_API_URL` = `https://YOUR-URL/api`
 - `FRONTEND_URL` = `https://YOUR-URL`
@@ -48,7 +49,7 @@ Save. Render redeploys.
    Make sure the scopes for name, email and account verification status are ticked.
 2. **Webhooks**: add a webhook with URL `https://YOUR-URL/api/paypal/webhook` and tick at least
    **Checkout order approved**. Copy its **Webhook ID**.
-3. Back in Render, set `PAYPAL_WEBHOOK_ID` to that ID. Save.
+3. Back in Render, **add** a variable `PAYPAL_WEBHOOK_ID` with that ID. Save.
 
 ## 5. Keep it awake (free)
 
