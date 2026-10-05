@@ -31,6 +31,7 @@ backend/
     auth.py       sign-in: PayPal login, dev login, cookie sessions, access checks
     paypal.py     authorize, capture, void, plus Log in with PayPal calls
     drops.py      drop engine: stock, minimum, deadline, settlement, seller verification
+    planner.py    drop planner: per-drop reports + explainable next-drop recommendations (numbers from code, not the LLM)
     agent.py      chat agent and its role-scoped tools
     llm.py        provider-neutral model interface + fallback;  gemini.py, groq.py, llm_factory.py
     models.py     database tables;  db.py, config.py, deps.py

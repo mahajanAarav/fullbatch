@@ -149,3 +149,45 @@ export interface AnalyticsOrder {
   amount_collected: number
 }
 export const myAnalytics = () => request<{ drops: AnalyticsDrop[]; orders: AnalyticsOrder[] }>('/me/analytics')
+
+// The drop planner: how finished drops went, and a suggestion for the next one.
+export interface PlanReport {
+  drop_id: number
+  item_name: string
+  status: 'filled' | 'failed'
+  unit_price: number
+  quantity_total: number
+  minimum_units: number
+  max_per_buyer: number
+  committed_units: number
+  committed_orders: number
+  average_order_size: number
+  sell_through: number
+  minimum_ratio: number
+  window_hours: number
+  hours_to_minimum: number | null
+  share_in_last_day: number
+  revenue_collected: number
+  revenue_not_collected: number
+  busiest_weekday: string | null
+  busiest_hour: number | null
+  closed_at: string
+}
+export interface Recommendation {
+  enough_data: boolean
+  confidence: 'none' | 'low' | 'medium' | 'high'
+  message?: string
+  caveat?: string | null
+  recommended: {
+    item_name: string | null
+    unit_price: number | null
+    quantity_total: number
+    minimum_units: number
+    max_per_buyer: number
+    duration_days: number
+    deadline?: string
+  }
+  reasons: string[]
+  based_on: number[]
+}
+export const myPlan = () => request<{ recommendation: Recommendation; reports: PlanReport[] }>('/me/plan')

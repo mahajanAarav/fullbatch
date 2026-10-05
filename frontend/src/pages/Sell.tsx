@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useState, type FormEvent } from 'react'
 import { cancelDrop, createShop, myDrops, type Drop } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
-import { CreateDropDialog } from '../components/CreateDropDialog'
+import { CreateDropDialog, type DropDraft } from '../components/CreateDropDialog'
 import { DropCard } from '../components/DropCard'
 import { Modal } from '../components/Modal'
 import { Toast } from '../components/Toast'
@@ -12,6 +12,7 @@ import { usePolling } from '../hooks'
 
 // AG Studio is a large library, so it only loads when a seller opens the Dashboard tab.
 const Dashboard = lazy(() => import('../components/Dashboard'))
+const Planner = lazy(() => import('../components/Planner'))
 
 export default function Sell() {
   const { me } = useAuth()
@@ -85,8 +86,9 @@ function totals(drops: Drop[]) {
 
 function Workspace({ shop }: { shop: { id: number; name: string; verified: boolean } }) {
   const { data: drops, error, reload } = usePolling(myDrops)
-  const [tab, setTab] = useState<'drops' | 'dashboard'>('drops')
+  const [tab, setTab] = useState<'drops' | 'dashboard' | 'planner'>('drops')
   const [creating, setCreating] = useState(false)
+  const [draft, setDraft] = useState<DropDraft | undefined>(undefined) // set when the planner pre-fills the form
   const [cancelling, setCancelling] = useState<Drop | null>(null)
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -117,7 +119,7 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
               </span>
             </h1>
           </div>
-          <button className="button" onClick={() => setCreating(true)} disabled={!shop.verified}>
+          <button className="button" onClick={() => { setDraft(undefined); setCreating(true) }} disabled={!shop.verified}>
             + New drop
           </button>
         </div>
@@ -133,6 +135,9 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           <button role="tab" aria-selected={tab === 'drops'} className={tab === 'drops' ? 'tab tab-on' : 'tab'} onClick={() => setTab('drops')}>
             Drops
           </button>
+          <button role="tab" aria-selected={tab === 'planner'} className={tab === 'planner' ? 'tab tab-on' : 'tab'} onClick={() => setTab('planner')}>
+            Planner
+          </button>
           <button role="tab" aria-selected={tab === 'dashboard'} className={tab === 'dashboard' ? 'tab tab-on' : 'tab'} onClick={() => setTab('dashboard')}>
             Dashboard
           </button>
@@ -141,6 +146,10 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
         {tab === 'dashboard' ? (
           <Suspense fallback={<p className="muted">Loading your dashboard…</p>}>
             <Dashboard />
+          </Suspense>
+        ) : tab === 'planner' ? (
+          <Suspense fallback={<p className="muted">Loading your plan…</p>}>
+            <Planner canCreate={shop.verified} onUse={(d) => { setDraft(d); setCreating(true) }} />
           </Suspense>
         ) : (
           <>
@@ -184,12 +193,12 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           key={shop.id}
           role="seller"
           intro="I can create drops, check progress, or cancel one. You can also use the New drop button."
-          suggestions={['How are my drops doing?', 'Help me set up a new drop']}
+          suggestions={['How did my last drop go?', 'What should I run next?']}
           onReply={reload}
         />
       </AssistantDock>
 
-      <CreateDropDialog open={creating} onClose={() => setCreating(false)} onCreated={() => { reload(); setToast('Drop created. It’s open for orders.') }} />
+      <CreateDropDialog open={creating} draft={draft} onClose={() => setCreating(false)} onCreated={() => { reload(); setTab('drops'); setToast('Drop created. It’s open for orders.') }} />
 
       <Modal open={cancelling !== null} onClose={() => setCancelling(null)} title="Cancel this drop?">
         <p>

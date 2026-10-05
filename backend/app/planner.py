@@ -189,11 +189,17 @@ def recommend(
             "post on the last day is likely to help."
         )
     days = max(2, _round_half_up(window_days))
-    close = _suggest_close(now, days, weekdays, hours, tz_name)
+    close, snapped = _suggest_close(now, days, weekdays, hours, tz_name)
     if weekdays:
         day, _ = weekdays.most_common(1)[0]
         hour, _ = hours.most_common(1)[0]
-        reasons.append(f"Most orders come in on {day}s around {_hour_label(hour)}. The suggested closing time follows that rhythm.")
+        if snapped:
+            reasons.append(f"Most orders come in on {day}s around {_hour_label(hour)}, so the suggested closing time lands on a {day}.")
+        else:
+            reasons.append(
+                f"Most orders come in on {day}s around {_hour_label(hour)}. A {days}-day window can't end on a {day} without "
+                "changing its length much, so make sure the drop is open on one."
+            )
 
     confidence = "high" if len(reports) >= 3 else "medium" if len(reports) == 2 else "low"
     caveat = {
@@ -220,8 +226,11 @@ def recommend(
     }
 
 
-def _suggest_close(now: datetime, days: int, weekdays: Counter, hours: Counter, tz_name: str) -> datetime:
-    """About `days` from now, snapped to the evening of the weekday this shop's buyers order on."""
+def _suggest_close(now: datetime, days: int, weekdays: Counter, hours: Counter, tz_name: str) -> tuple[datetime, bool]:
+    """
+    About `days` from now at 6 pm local. Returns (time, snapped), where `snapped` is True when it
+    could be moved onto the weekday this shop's buyers order on without changing the length by more than a day.
+    """
     tz = ZoneInfo(tz_name)
     target = _local(now, tz) + timedelta(days=days)
     target = target.replace(hour=18, minute=0, second=0, microsecond=0)
@@ -232,5 +241,5 @@ def _suggest_close(now: datetime, days: int, weekdays: Counter, hours: Counter, 
         for shift in (0, -1, 1):
             candidate = target + timedelta(days=shift)
             if candidate.weekday() == peak and candidate > _local(now, tz) + timedelta(hours=24):
-                return candidate
-    return target
+                return candidate, True
+    return target, False

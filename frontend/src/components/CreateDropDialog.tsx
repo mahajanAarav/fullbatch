@@ -2,30 +2,44 @@ import { useState, type FormEvent } from 'react'
 import { createDrop } from '../api'
 import { Modal } from './Modal'
 
+export interface DropDraft {
+  item_name?: string | null
+  unit_price?: number | null
+  quantity_total?: number
+  minimum_units?: number
+  max_per_buyer?: number
+  deadline?: string // ISO 8601
+}
+
+const pad = (n: number) => String(n).padStart(2, '0')
+// The value a datetime-local input wants, in the browser's own timezone.
+function toLocalInput(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 // Default deadline: tomorrow at 6 pm, in the seller's own timezone.
 function defaultDeadline(): string {
   const d = new Date()
   d.setDate(d.getDate() + 1)
   d.setHours(18, 0, 0, 0)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return toLocalInput(d)
 }
 
-export function CreateDropDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+export function CreateDropDialog({ open, draft, onClose, onCreated }: { open: boolean; draft?: DropDraft; onClose: () => void; onCreated: () => void }) {
   return (
     <Modal open={open} onClose={onClose} title="New drop">
-      {open && <Form onClose={onClose} onCreated={onCreated} />}
+      {open && <Form draft={draft} onClose={onClose} onCreated={onCreated} />}
     </Modal>
   )
 }
 
-function Form({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [item, setItem] = useState('')
-  const [price, setPrice] = useState('')
-  const [quantity, setQuantity] = useState('12')
-  const [minimum, setMinimum] = useState('6')
-  const [maxPer, setMaxPer] = useState('4')
-  const [deadline, setDeadline] = useState(defaultDeadline)
+function Form({ draft, onClose, onCreated }: { draft?: DropDraft; onClose: () => void; onCreated: () => void }) {
+  const [item, setItem] = useState(draft?.item_name ?? '')
+  const [price, setPrice] = useState(draft?.unit_price != null ? draft.unit_price.toFixed(2) : '')
+  const [quantity, setQuantity] = useState(String(draft?.quantity_total ?? 12))
+  const [minimum, setMinimum] = useState(String(draft?.minimum_units ?? 6))
+  const [maxPer, setMaxPer] = useState(String(draft?.max_per_buyer ?? 4))
+  const [deadline, setDeadline] = useState(() => (draft?.deadline ? toLocalInput(new Date(draft.deadline)) : defaultDeadline()))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 

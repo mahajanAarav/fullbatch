@@ -171,3 +171,15 @@ def test_only_finished_drops_of_this_seller_count(session, seller):
     reports = planner.settled_reports(session, seller.id, TZ)
     assert [r["item_name"] for r in reports] == ["Sourdough"]
     assert planner.settled_reports(session, seller.id + 99, TZ) == []
+
+
+def test_the_timing_reason_never_claims_more_than_it_did(session, seller):
+    sold_out_fast(session, seller)
+    out = rec_for(session, seller)
+    deadline = datetime.fromisoformat(out["recommended"]["deadline"]).astimezone(ZoneInfo(TZ))
+    line = next(x for x in out["reasons"] if x.startswith("Most orders come in on"))
+    busiest = planner.drop_report(session, session.query(Drop).first(), TZ)["busiest_weekday"]
+    if "lands on a" in line:
+        assert deadline.strftime("%A") == busiest          # it says it snapped, so it must have
+    else:
+        assert "can't end on" in line and deadline.strftime("%A") != busiest
