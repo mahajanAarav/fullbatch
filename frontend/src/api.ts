@@ -119,3 +119,33 @@ export interface PlacedOrder {
   reserved_until: string
 }
 export const placeOrder = (dropId: number, quantity: number) => post<PlacedOrder>(`/drops/${dropId}/orders`, { quantity })
+
+// Flat rows for the AG Studio dashboard. Buyers' identities are never included.
+export interface AnalyticsDrop {
+  drop_id: number
+  item_name: string
+  status: Drop['status']
+  is_open: number
+  unit_price: number
+  quantity_total: number
+  minimum_units: number
+  units_approved: number
+  units_reserved: number
+  fill_percent: number
+  deadline: string
+  created_at: string
+}
+export interface AnalyticsOrder {
+  order_id: number
+  drop_id: number
+  item_name: string
+  status: OrderStatus
+  quantity: number
+  amount: number
+  created_at: string
+  units_approved: number
+  value_approved: number
+  amount_on_hold: number
+  amount_collected: number
+}
+export const myAnalytics = () => request<{ drops: AnalyticsDrop[]; orders: AnalyticsOrder[] }>('/me/analytics')

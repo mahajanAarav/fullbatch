@@ -3,12 +3,13 @@ import { useStoredFlag } from '../hooks'
 
 // The chat assistant lives in a side panel you can hide. Everything it does can also be done
 // with the buttons and forms on the page.
-export function AssistantDock({ children, label = 'Assistant' }: { children: ReactNode; label?: string }) {
-  const [open, setOpen] = useStoredFlag('fullbatch.dock', () => window.innerWidth >= 1100)
+// `overlay` floats the panel over the page (used when the page itself needs the full width, like the dashboard).
+export function AssistantDock({ children, label = 'Assistant', overlay = false }: { children: ReactNode; label?: string; overlay?: boolean }) {
+  const [open, setOpen] = useStoredFlag(overlay ? 'fullbatch.dock.overlay' : 'fullbatch.dock', () => !overlay && window.innerWidth >= 1100)
 
   return (
     <>
-      <aside className={`dock ${open ? 'dock-open' : ''}`} aria-label={label} hidden={!open}>
+      <aside className={`dock ${open ? 'dock-open' : ''} ${overlay ? 'dock-overlay' : ''}`} aria-label={label} hidden={!open}>
         <header className="dock-head">
           <div>
             <strong>{label}</strong>

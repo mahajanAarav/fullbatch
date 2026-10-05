@@ -176,6 +176,52 @@ def my_drops(shop: Seller = Depends(require_shop), session: Session = Depends(ge
     return {"drops": [drops.drop_progress(session, d) for d in rows]}
 
 
+@app.get("/me/analytics")
+def my_analytics(shop: Seller = Depends(require_shop), session: Session = Depends(get_session)):
+    """
+    The seller's drops and orders as flat rows for the dashboard. Buyers' names and emails are left
+    out on purpose: a seller sees what sold, not who bought. Measures are precomputed per row so
+    the dashboard can simply sum them.
+    """
+    drop_rows = session.scalars(select(Drop).where(Drop.seller_id == shop.id).order_by(Drop.id)).all()
+    drops_out, orders_out = [], []
+    for d in drop_rows:
+        p = drops.drop_progress(session, d)
+        u = p["units_by_order_status"]
+        approved = p["paid_up_units"]
+        drops_out.append({
+            "drop_id": d.id,
+            "item_name": d.item_name,
+            "status": d.status.value,
+            "is_open": 1 if d.status.value == "open" else 0,
+            "unit_price": float(d.unit_price),
+            "quantity_total": d.quantity_total,
+            "minimum_units": d.minimum_units,
+            "units_approved": approved,
+            "units_reserved": u["reserved"],
+            "fill_percent": round(100 * approved / d.minimum_units),
+            "deadline": d.deadline.isoformat(),
+            "created_at": d.created_at.isoformat(),
+        })
+        for o in session.scalars(select(Order).where(Order.drop_id == d.id).order_by(Order.id)):
+            status = o.status.value
+            approved_order = status in ("authorized", "captured")
+            orders_out.append({
+                "order_id": o.id,
+                "drop_id": d.id,
+                "item_name": d.item_name,
+                "status": status,
+                "quantity": o.quantity,
+                "amount": float(o.amount),
+                "created_at": o.created_at.isoformat(),
+                "units_approved": o.quantity if approved_order else 0,
+                "value_approved": float(o.amount) if approved_order else 0.0,
+                "amount_on_hold": float(o.amount) if status == "authorized" else 0.0,
+                "amount_collected": float(o.amount) if status == "captured" else 0.0,
+            })
+    return {"drops": drops_out, "orders": orders_out}
+
+
 @app.post("/drops/{drop_id}/cancel")
 def cancel_drop(
     drop_id: int,

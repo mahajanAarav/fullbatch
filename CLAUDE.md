@@ -16,7 +16,7 @@ An AI agent that runs preorder "drops" for small sellers such as home bakers and
 - PayPal: direct REST calls with `httpx` (Orders API v2 with `intent: AUTHORIZE`, Payments API v2 for capture and void, webhooks for payment events)
 - Database: Postgres
 - AI: an LLM API with tool calling; the agent's tools are backend functions (create drop, take order, check stock)
-- Frontend: React, with AG Studio (AG Grid) for the seller dashboard
+- Frontend: React, with AG Studio (AG Grid) for the seller dashboard (`frontend/src/components/Dashboard.tsx`, lazy-loaded; data from `GET /me/analytics`, which never includes buyer identities)
 - Chat channel: a web chat inside the React app, optional: everything it does also has buttons and forms
 - Accounts: Log in with PayPal (PayPal verifies identity; sellers need a PayPal-verified account), cookie sessions
 - LLM providers: Gemini models first, Groq as the last-resort fallback, behind one small interface (`app/llm.py`)
@@ -51,6 +51,7 @@ dev.sh            starts the database, API and frontend locally
 - Python environment: `source backend/.venv/bin/activate` (dev deps: `pip install -r backend/requirements-dev.txt`)
 - PayPal sandbox checks: `python backend/scripts/check_paypal_credentials.py`; the flow scripts are interactive
   (a person must approve the payment as a sandbox buyer), so do not run `test_paypal_flow.py` or `test_paypal_client.py` unattended.
+- Demo data for the dashboard and screenshots (local DB only): `python backend/scripts/seed_demo.py`, then dev-sign-in as demo@example.com (tick verified)
 - Live model check: `python backend/scripts/check_gemini_agent.py [--provider gemini|groq|auto]`
 
 ## Rules

@@ -1,4 +1,4 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useState, type FormEvent } from 'react'
 import { cancelDrop, createShop, myDrops, type Drop } from '../api'
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
@@ -9,6 +9,9 @@ import { Toast } from '../components/Toast'
 import { useAuth } from '../authContext'
 import { money } from '../format'
 import { usePolling } from '../hooks'
+
+// AG Studio is a large library, so it only loads when a seller opens the Dashboard tab.
+const Dashboard = lazy(() => import('../components/Dashboard'))
 
 export default function Sell() {
   const { me } = useAuth()
@@ -82,6 +85,7 @@ function totals(drops: Drop[]) {
 
 function Workspace({ shop }: { shop: { id: number; name: string; verified: boolean } }) {
   const { data: drops, error, reload } = usePolling(myDrops)
+  const [tab, setTab] = useState<'drops' | 'dashboard'>('drops')
   const [creating, setCreating] = useState(false)
   const [cancelling, setCancelling] = useState<Drop | null>(null)
   const [cancelError, setCancelError] = useState<string | null>(null)
@@ -102,7 +106,7 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
   }
 
   return (
-    <div className="shell">
+    <div className={tab === 'dashboard' ? 'shell shell-wide' : 'shell'}>
       <main className="wrap main">
         <div className="page-head">
           <div>
@@ -125,6 +129,21 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
           </div>
         )}
 
+        <div className="tabs" role="tablist" aria-label="Seller views">
+          <button role="tab" aria-selected={tab === 'drops'} className={tab === 'drops' ? 'tab tab-on' : 'tab'} onClick={() => setTab('drops')}>
+            Drops
+          </button>
+          <button role="tab" aria-selected={tab === 'dashboard'} className={tab === 'dashboard' ? 'tab tab-on' : 'tab'} onClick={() => setTab('dashboard')}>
+            Dashboard
+          </button>
+        </div>
+
+        {tab === 'dashboard' ? (
+          <Suspense fallback={<p className="muted">Loading your dashboard…</p>}>
+            <Dashboard />
+          </Suspense>
+        ) : (
+          <>
         <section className="kpis" aria-label="Summary">
           <Kpi label="Open drops" value={String(t.openDrops)} />
           <Kpi label="Units approved" value={String(t.approvedUnits)} hint="across open drops" />
@@ -156,9 +175,11 @@ function Workspace({ shop }: { shop: { id: number; name: string; verified: boole
             />
           ))}
         </div>
+          </>
+        )}
       </main>
 
-      <AssistantDock label="Assistant">
+      <AssistantDock key={tab === 'dashboard' ? 'overlay' : 'docked'} label="Assistant" overlay={tab === 'dashboard'}>
         <Chat
           key={shop.id}
           role="seller"

@@ -217,6 +217,17 @@ a { color: var(--accent); }
 .banner { margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--warn); background: var(--warn-soft); border-radius: 10px; font-size: 0.9rem; }
 .dock-signin { flex: 1; padding: 20px; }
 
+/* ---- seller tabs and the AG Studio dashboard ---- */
+.tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 14px; font: inherit; font-weight: 600; font-size: 0.9rem; color: var(--muted); cursor: pointer; }
+.tab:hover { color: var(--ink); }
+.tab-on { color: var(--ink); border-bottom-color: var(--accent); }
+.shell-wide { grid-template-columns: minmax(0, 1fr); max-width: 1480px; }
+.dock-overlay { position: fixed; right: 20px; bottom: 76px; top: auto; left: auto; width: min(400px, calc(100vw - 32px)); height: min(70vh, 620px); margin: 0; z-index: 20; box-shadow: 0 12px 40px rgb(0 0 0 / 40%); }
+.dashboard { overflow: hidden; }
+.dashboard-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.dashboard-canvas { height: min(78vh, 900px); min-height: 640px; }
+
 /* ---- toast ---- */
 .toast { position: fixed; left: 20px; bottom: 20px; z-index: 30; max-width: min(440px, calc(100vw - 40px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--ink); color: var(--bg); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); font-size: 0.9rem; animation: rise 0.25s ease; }
 .toast .icon-button { color: var(--bg); opacity: 0.7; }

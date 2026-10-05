@@ -378,3 +378,40 @@ def test_deadline_job_one_bad_drop_does_not_block_others(make_client, session_fa
     summary = drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))
     assert len(summary["errors"]) == 1 and summary["errors"][0]["drop_id"] == bad["id"]
     assert buyer.get(f"/orders/{good_order}").json()["status"] == "captured"
+
+
+# ---- dashboard data ---------------------------------------------------------------
+
+def test_analytics_needs_a_shop(make_client):
+    assert make_client().get("/me/analytics").status_code == 401
+    assert seller_client(make_client, shop=False).get("/me/analytics").status_code == 403
+
+
+def test_analytics_has_measures_and_no_buyer_identity(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    drop = make_drop(seller, quantity_total=10, minimum_units=4).json()
+    ann = buyer_client(make_client, "ann@example.com", "Ann Secret")
+    ben = buyer_client(make_client, "ben@example.com", "Ben Secret")
+    paid_order(ann, drop["id"], 2)                                   # approved: on hold
+    ben.post(f"/drops/{drop['id']}/orders", json={"quantity": 1})    # reserved only
+
+    data = seller.get("/me/analytics").json()
+    row = data["drops"][0]
+    assert row["units_approved"] == 2 and row["units_reserved"] == 1 and row["fill_percent"] == 50 and row["is_open"] == 1
+    by_status = {o["status"]: o for o in data["orders"]}
+    assert by_status["authorized"]["amount_on_hold"] == 18.0 and by_status["authorized"]["value_approved"] == 18.0
+    assert by_status["reserved"]["value_approved"] == 0.0 and by_status["reserved"]["amount_on_hold"] == 0.0
+    text = str(data)
+    assert "Secret" not in text and "@example.com" not in text and "buyer" not in text   # nobody's identity leaks
+
+    # once the drop settles, the money moves from "on hold" to "collected"
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))
+    again = {o["status"]: o for o in seller.get("/me/analytics").json()["orders"]}
+    assert again["voided"]["amount_collected"] == 0.0  # missed its minimum of 4, so nothing was charged
+
+
+def test_analytics_only_covers_my_own_shop(make_client):
+    a, b = seller_client(make_client, email="a@example.com"), seller_client(make_client, email="b@example.com")
+    make_drop(a, item_name="Mine")
+    make_drop(b, item_name="Theirs")
+    assert [d["item_name"] for d in a.get("/me/analytics").json()["drops"]] == ["Mine"]
