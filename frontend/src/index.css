@@ -347,6 +347,36 @@ fieldset.where legend { padding: 0 6px; font-weight: 700; font-size: 0.85rem; }
 .pay-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; width: 100%; }
 .pay-actions .button-paypal { width: 100%; }
 
+/* ---- the neighborhood: map, area chips, shop pages ---- */
+.view-toggle { width: auto; }
+.view-toggle .seg { padding: 7px 14px; }
+.chips-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.chip-on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip-on:hover:not(:disabled) { color: var(--accent-ink); }
+.map { height: min(62vh, 560px); min-height: 360px; border-radius: var(--radius); border: 1px solid var(--line); overflow: hidden; isolation: isolate; margin-bottom: 8px; }
+.map-note { margin-bottom: 14px; }
+.map-pin-wrap { background: none; border: 0; }
+.map-pin { position: absolute; transform: translate(-50%, -100%); white-space: nowrap; padding: 4px 9px; border-radius: 999px; background: var(--accent); color: #fff; font: 700 0.78rem var(--sans); box-shadow: 0 2px 8px rgb(0 0 0 / 35%); border: 2px solid #fff; }
+.map-pin::after { content: ''; position: absolute; left: 50%; bottom: -7px; width: 8px; height: 8px; background: var(--accent); border-right: 2px solid #fff; border-bottom: 2px solid #fff; transform: translateX(-50%) rotate(45deg); }
+.map-popup { display: flex; flex-direction: column; gap: 10px; font: 0.88rem var(--sans); color: #2a2118; }
+.map-popup-row { display: flex; flex-direction: column; gap: 3px; padding-top: 8px; border-top: 1px solid #e9dfd0; }
+.map-popup-row:first-child { border-top: 0; padding-top: 0; }
+.map-meta { color: #6f6256; font-size: 0.8rem; }
+.map-link { background: none; border: 0; padding: 0; text-align: left; color: #c4512f; font: 600 0.8rem var(--sans); cursor: pointer; text-decoration: underline; }
+.map-reserve { margin-top: 4px; padding: 7px 10px; border: 0; border-radius: 8px; background: #c4512f; color: #fff; font: 700 0.85rem var(--sans); cursor: pointer; }
+.map-reserve:disabled { opacity: 0.45; cursor: not-allowed; }
+.leaflet-popup-content { margin: 12px 14px; }
+@media (prefers-color-scheme: dark) { .map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); } }
+.drop-shop-link { color: inherit; text-decoration: none; }
+.drop-shop-link:hover { text-decoration: underline; }
+.shop-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 22px; }
+.shop-head h1 { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.shop-stats { display: flex; gap: 22px; margin: 0; padding: 12px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.shop-stats dt { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.shop-stats dd { margin: 2px 0 0; font-weight: 700; font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.shop-stats dd .muted { font-weight: 400; font-size: 0.8rem; }
+.section-title { margin-bottom: 12px; }
+
 /* ---- toast ---- */
 .toast { position: fixed; left: 20px; bottom: 20px; z-index: 30; max-width: min(440px, calc(100vw - 40px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--ink); color: var(--bg); border-radius: 10px; box-shadow: 0 8px 28px rgb(0 0 0 / 35%); font-size: 0.9rem; animation: rise 0.25s ease; }
 .toast .icon-button { color: var(--bg); opacity: 0.7; }

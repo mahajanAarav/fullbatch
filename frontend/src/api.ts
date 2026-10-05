@@ -244,3 +244,17 @@ export const myPlan = () => request<{ recommendation: Recommendation; reports: P
 export const payOrder = (id: number) => post<{ approval_url: string }>(`/orders/${id}/pay`, {})
 // Give up a reservation that hasn't been paid for.
 export const cancelOrder = (id: number) => post<Order>(`/orders/${id}/cancel`, {})
+
+// A shop's public page: built from real activity, with no addresses, emails or buyer names.
+export interface Shop {
+  id: number
+  name: string
+  verified: boolean
+  member_since: string
+  area: string | null
+  drops_filled: number
+  drops_total: number
+  units_delivered: number
+  open_drops: Drop[]
+}
+export const getShop = (id: number) => request<Shop>(`/shops/${id}`)

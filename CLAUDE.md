@@ -16,6 +16,7 @@ An AI agent that runs preorder "drops" for small sellers such as home bakers and
 - PayPal: direct REST calls with `httpx` (Orders API v2 with `intent: AUTHORIZE`, Payments API v2 for capture and void, webhooks for payment events)
 - Database: Postgres
 - AI: an LLM API with tool calling; the agent's tools are backend functions (create drop, take order, check stock)
+- Map: Leaflet + OpenStreetMap tiles (free, no key). Pins use the rounded public coordinates only.
 - Frontend: React, with AG Studio (AG Grid) for the seller dashboard (`frontend/src/components/Dashboard.tsx`, lazy-loaded; data from `GET /me/analytics`, which never includes buyer identities)
 - Chat channel: a web chat inside the React app, optional: everything it does also has buttons and forms
 - Accounts: Log in with PayPal (PayPal verifies identity; sellers need a PayPal-verified account), cookie sessions
@@ -41,7 +42,7 @@ backend/
   migrations/     Alembic
   scripts/        dev_db.py, sandbox checks, live model check
   tests/          pytest (real Postgres via pixeltable-pgserver, fake PayPal)
-frontend/         React + Vite + TypeScript. Pages: Home (the marketplace, no hero), Orders, OrderStatus, Sell (Drops / Planner / Dashboard tabs), SignIn
+frontend/         React + Vite + TypeScript. Pages: Home (the marketplace: list or map view, neighborhood chips, near-me), Shop (public shop page), Orders, OrderStatus, Sell (Drops / Planner / Dashboard tabs), SignIn
 workflows/        (empty) reserved for Render Workflows
 Dockerfile, render.yaml, DEPLOY.md   deployment (one Render web service)
 dev.sh            starts the database, API and frontend locally

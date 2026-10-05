@@ -1,5 +1,5 @@
 export function money(amount: string | number, currency = 'USD'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(amount))
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(amount)) // the visitor's own number format
 }
 
 export function whenText(iso: string): string {

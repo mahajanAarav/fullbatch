@@ -4,6 +4,7 @@ import { listOpenDrops, myOrders, payOrder, type Drop, type Order } from '../api
 import { AssistantDock } from '../components/AssistantDock'
 import { Chat } from '../components/Chat'
 import { DropCard } from '../components/DropCard'
+import { DropsMap } from '../components/DropsMap'
 import { ReserveDialog } from '../components/ReserveDialog'
 import { VerifyEmailDialog } from '../components/VerifyEmailDialog'
 import { DropGridSkeleton } from '../components/Skeleton'
@@ -43,6 +44,8 @@ export default function Home() {
   const [sort, setSort] = useState<Sort>('ending')
   const [location, setLocation] = useBuyerLocation()
   const [within, setWithin] = useState<number>(0) // miles; 0 means any distance
+  const [view, setView] = useState<'list' | 'map'>('list')
+  const [area, setArea] = useState<string | null>(null) // a neighborhood to focus on
   const [tipSeen, setTipSeen] = useState(() => readFlag(TIP_KEY))
   const clearToast = useCallback(() => setToast(null), [])
 
@@ -78,6 +81,7 @@ export default function Home() {
     const q = search.trim().toLowerCase()
     const list = (drops.data ?? []).filter((d) => {
       if (q && !d.item_name.toLowerCase().includes(q) && !d.shop_name.toLowerCase().includes(q) && !(d.area ?? '').toLowerCase().includes(q)) return false
+      if (area && d.area !== area) return false
       const away = distanceOf(d)
       return !(within > 0 && away !== null && away > within)
     })
@@ -89,7 +93,14 @@ export default function Home() {
       available: (a, b) => b.units_remaining - a.units_remaining,
     }
     return [...list].sort(by[location || sort !== 'nearest' ? sort : 'ending'])
-  }, [drops.data, search, sort, within, location, distanceOf])
+  }, [drops.data, search, sort, within, location, distanceOf, area])
+
+  // Neighborhoods that have open drops, with how many.
+  const areas = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const d of drops.data ?? []) if (d.area) counts.set(d.area, (counts.get(d.area) ?? 0) + 1)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [drops.data])
 
   // What this person already has on each drop: their units, and any order they could still finish paying for.
   const mine = useMemo(() => {
@@ -137,6 +148,14 @@ export default function Home() {
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Search drops"
             />
+            <div className="segmented view-toggle" role="radiogroup" aria-label="View">
+              <button type="button" role="radio" aria-checked={view === 'list'} className={view === 'list' ? 'seg seg-on' : 'seg'} onClick={() => setView('list')}>
+                List
+              </button>
+              <button type="button" role="radio" aria-checked={view === 'map'} className={view === 'map' ? 'seg seg-on' : 'seg'} onClick={() => setView('map')}>
+                Map
+              </button>
+            </div>
             <select className="select" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort drops">
               {Object.entries(SORTS)
                 .filter(([value]) => location || value !== 'nearest')
@@ -162,6 +181,19 @@ export default function Home() {
             }
           }}
         />
+
+        {areas.length > 0 && (
+          <div className="chips-row" role="group" aria-label="Neighborhoods">
+            <button className={area === null ? 'chip chip-on' : 'chip'} onClick={() => setArea(null)}>
+              All areas
+            </button>
+            {areas.map(([name, count]) => (
+              <button key={name} className={area === name ? 'chip chip-on' : 'chip'} onClick={() => setArea(area === name ? null : name)}>
+                {name} · {count}
+              </button>
+            ))}
+          </div>
+        )}
 
         {!tipSeen && (
           <div className="tip" role="note">
@@ -193,7 +225,17 @@ export default function Home() {
             </button>
           </div>
         )}
-        <div className="grid">
+        {view === 'map' && drops.data && (
+          <>
+            <DropsMap drops={shown} location={location} onReserve={reserve} onOpenShop={(id) => navigate(`/shop/${id}`)} />
+            {shown.some((d) => d.lat === null) && (
+              <p className="muted small map-note">
+                {shown.filter((d) => d.lat === null).length} drop(s) have no location, so they appear in the list only.
+              </p>
+            )}
+          </>
+        )}
+        <div className="grid" hidden={view === 'map'}>
           {shown.map((d) => (
             <DropCard
               key={d.id}

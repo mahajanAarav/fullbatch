@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -168,6 +168,39 @@ def health():
 def list_drops(session: Session = Depends(get_session)):
     """Drops currently taking orders (what a buyer can choose from)."""
     return {"drops": [drops.drop_progress(session, d) for d in drops.list_open_drops(session)]}
+
+
+@app.get("/shops/{shop_id}")
+def get_shop(shop_id: int, session: Session = Depends(get_session)):
+    """
+    A shop's public page: who they are, where (neighborhood only), and how their drops have gone.
+    It is built from real activity, never from anything the seller typed about themselves, and it carries
+    no addresses, emails or buyer names.
+    """
+    shop = session.get(Seller, shop_id)
+    if shop is None:
+        raise drops.DropNotFound(f"No shop with id {shop_id}.")
+    all_drops = session.scalars(select(Drop).where(Drop.seller_id == shop.id).order_by(Drop.id.desc())).all()
+    filled = [d for d in all_drops if d.status.value == "filled"]
+    units_delivered = int(
+        session.scalar(
+            select(func.coalesce(func.sum(Order.quantity), 0)).where(
+                Order.drop_id.in_([d.id for d in filled] or [0]), Order.status == OrderStatus.CAPTURED
+            )
+        )
+    )
+    open_drops = [d for d in all_drops if d.status.value == "open" and d.deadline > datetime.now(timezone.utc)]
+    return {
+        "id": shop.id,
+        "name": shop.name,
+        "verified": shop.verified,
+        "member_since": shop.created_at.isoformat(),
+        "area": next((d.pickup_area for d in all_drops if d.pickup_area), None),
+        "drops_filled": len(filled),
+        "drops_total": sum(1 for d in all_drops if d.status.value in ("filled", "failed")),
+        "units_delivered": units_delivered,
+        "open_drops": [drops.drop_progress(session, d) for d in open_drops],
+    }
 
 
 @app.get("/drops/{drop_id}")

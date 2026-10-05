@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import type { Drop } from '../api'
 import { money, timeLeft, whenText } from '../format'
 import { useNow } from '../hooks'
@@ -67,7 +68,15 @@ export function DropCard({
         <span className="drop-initial" aria-hidden="true">
           {drop.item_name.trim().charAt(0).toUpperCase()}
         </span>
-        <span className="drop-shop">{showShop ? `by ${drop.shop_name}` : ''}</span>
+        <span className="drop-shop">
+          {showShop ? (
+            <Link to={`/shop/${drop.seller_id}`} className="drop-shop-link">
+              by {drop.shop_name}
+            </Link>
+          ) : (
+            ''
+          )}
+        </span>
         <span className={`pill pill-on-tile ${isOpen ? '' : `pill-${drop.status}`}`}>{isOpen ? timeLeft(drop.deadline, now) : STATUS_LABEL[drop.status]}</span>
       </div>
 

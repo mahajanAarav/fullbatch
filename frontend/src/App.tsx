@@ -9,6 +9,7 @@ import Home from './pages/Home'
 import OrderStatus from './pages/OrderStatus'
 import Orders from './pages/Orders'
 import Sell from './pages/Sell'
+import Shop from './pages/Shop'
 import SignIn from './pages/SignIn'
 
 function Nav() {
@@ -82,6 +83,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/buy" element={<Navigate to="/" replace />} />
+        <Route path="/shop/:id" element={<Shop />} />
         <Route path="/signin" element={<SignIn />} />
         <Route path="/sell" element={<RequireAuth><Sell /></RequireAuth>} />
         <Route path="/orders" element={<RequireAuth><Orders /></RequireAuth>} />

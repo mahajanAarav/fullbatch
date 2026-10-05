@@ -687,3 +687,43 @@ def test_the_per_person_limit_holds_across_orders_through_the_api(make_client):
     assert buyer.post(f"/drops/{drop['id']}/orders", json={"quantity": 1}).status_code == 201
     other = buyer_client(make_client, "other@example.com", "Other")
     assert other.post(f"/drops/{drop['id']}/orders", json={"quantity": 3}).status_code == 201
+
+
+# ---- public shop pages -----------------------------------------------------------------------------
+
+def test_a_shop_page_is_public_and_built_from_real_activity(make_client, session_factory, paypal):
+    seller = seller_client(make_client)
+    drop = seller.post("/drops", json=drop_body(minimum_units=2, **located())).json()
+    buyer = buyer_client(make_client)
+    paid_order(buyer, drop["id"], 2)
+    drops.run_deadline_job(session_factory, paypal, now=datetime.now(timezone.utc) + timedelta(days=4))   # fills and settles
+    seller.post("/drops", json=drop_body(item_name="Next batch", **located()))                             # a new open drop
+
+    page = make_client().get("/shops/1").json()                                                            # no sign-in needed
+    assert page["name"] == "Bea's Bakery" and page["verified"] is True and page["area"] == "Koreatown, New York"
+    assert (page["drops_filled"], page["drops_total"], page["units_delivered"]) == (1, 1, 2)
+    assert [d["item_name"] for d in page["open_drops"]] == ["Next batch"]
+
+
+def test_a_shop_page_never_carries_anything_private(make_client):
+    seller = seller_client(make_client, email="secret-baker@example.com")
+    drop = seller.post("/drops", json=drop_body(**located())).json()
+    paid_order(buyer_client(make_client, "sam@example.com", "Sam Private"), drop["id"], 1)
+    shown = make_client().get("/shops/1").text
+    for private in ("350 5th", "side bell", "secret-baker@example.com", "sam@example.com", "Sam Private", "paypal_payer_id"):
+        assert private not in shown, private
+
+
+def test_unknown_shops_and_empty_shops(make_client):
+    assert make_client().get("/shops/999").status_code == 404
+    seller_client(make_client)                                                       # a shop with no drops yet
+    page = make_client().get("/shops/1").json()
+    assert page["drops_filled"] == 0 and page["open_drops"] == [] and page["area"] is None
+
+
+def test_cancelled_and_closed_drops_are_not_listed_as_open_on_a_shop_page(make_client):
+    seller = seller_client(make_client)
+    gone = seller.post("/drops", json=drop_body(item_name="Cancelled one", **located())).json()
+    seller.post(f"/drops/{gone['id']}/cancel")
+    seller.post("/drops", json=drop_body(item_name="Live one", **located()))
+    assert [d["item_name"] for d in make_client().get("/shops/1").json()["open_drops"]] == ["Live one"]
